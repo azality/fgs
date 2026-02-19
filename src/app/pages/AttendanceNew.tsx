@@ -30,6 +30,9 @@ interface Provider {
   location?: string;
   dayOfWeek?: string[];
   time?: string;
+  startDate?: string;
+  endDate?: string;
+  recurrenceWeeks?: number; // How many weeks this recurs
   color?: string;
   icon?: string;
 }
@@ -64,6 +67,9 @@ export function AttendanceNew() {
     ratePerClass: 25,
     time: "",
     dayOfWeek: [] as string[],
+    startDate: "",
+    endDate: "",
+    recurrenceWeeks: 1,
     color: ACTIVITY_COLORS[0],
     icon: ACTIVITY_ICONS[0]
   });
@@ -231,6 +237,7 @@ export function AttendanceNew() {
       if (response.ok) {
         toast.success('Activity updated!');
         setEditingProvider(null);
+        setCreateProviderOpen(false); // Close the modal
         resetProviderForm();
         loadProviders();
       }
@@ -324,6 +331,9 @@ export function AttendanceNew() {
       ratePerClass: 25,
       time: "",
       dayOfWeek: [],
+      startDate: "",
+      endDate: "",
+      recurrenceWeeks: 1,
       color: ACTIVITY_COLORS[0],
       icon: ACTIVITY_ICONS[0]
     });
@@ -338,6 +348,9 @@ export function AttendanceNew() {
       ratePerClass: provider.ratePerClass,
       time: provider.time || "",
       dayOfWeek: provider.dayOfWeek || [],
+      startDate: provider.startDate || "",
+      endDate: provider.endDate || "",
+      recurrenceWeeks: provider.recurrenceWeeks || 1,
       color: provider.color || ACTIVITY_COLORS[0],
       icon: provider.icon || ACTIVITY_ICONS[0]
     });
@@ -611,6 +624,54 @@ export function AttendanceNew() {
                         {day.substring(0, 3)}
                       </Button>
                     ))}
+                  </div>
+                </div>
+
+                {/* Recurring Schedule Section */}
+                <div className="col-span-2 p-4 bg-blue-50 border border-blue-200 rounded-lg space-y-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Calendar className="h-4 w-4 text-blue-600" />
+                    <Label className="text-blue-900 font-semibold">Recurring Schedule (Optional)</Label>
+                  </div>
+                  <p className="text-sm text-blue-800 mb-3">
+                    Set a specific date range for this activity. Example: Swimming every Friday at 5:40pm for next 3 weeks.
+                  </p>
+                  
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label htmlFor="startDate" className="text-sm">Start Date</Label>
+                      <Input
+                        id="startDate"
+                        type="date"
+                        value={providerForm.startDate}
+                        onChange={(e) => setProviderForm({ ...providerForm, startDate: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="endDate" className="text-sm">End Date</Label>
+                      <Input
+                        id="endDate"
+                        type="date"
+                        value={providerForm.endDate}
+                        onChange={(e) => setProviderForm({ ...providerForm, endDate: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <Label htmlFor="recurrenceWeeks" className="text-sm">Number of Weeks</Label>
+                    <Input
+                      id="recurrenceWeeks"
+                      type="number"
+                      min="1"
+                      max="52"
+                      value={providerForm.recurrenceWeeks}
+                      onChange={(e) => setProviderForm({ ...providerForm, recurrenceWeeks: parseInt(e.target.value) || 1 })}
+                      placeholder="e.g., 3 for 3 weeks"
+                    />
+                    <p className="text-xs text-blue-700 mt-1">
+                      How many weeks will this activity repeat?
+                    </p>
                   </div>
                 </div>
 

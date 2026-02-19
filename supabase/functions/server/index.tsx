@@ -2067,6 +2067,23 @@ app.get(
   }
 });
 
+// Delete milestone
+app.delete(
+  "/make-server-f116e23f/milestones/:id",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      await kv.del(id);
+      return c.json({ success: true });
+    } catch (error) {
+      console.error('Delete milestone error:', error);
+      return c.json({ error: 'Failed to delete milestone' }, 500);
+    }
+  }
+);
+
 // ===== REWARDS =====
 
 // Create reward
@@ -2106,6 +2123,23 @@ app.get(
     return c.json({ error: 'Failed to get rewards' }, 500);
   }
 });
+
+// Delete reward
+app.delete(
+  "/make-server-f116e23f/rewards/:id",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      await kv.del(id);
+      return c.json({ success: true });
+    } catch (error) {
+      console.error('Delete reward error:', error);
+      return c.json({ error: 'Failed to delete reward' }, 500);
+    }
+  }
+);
 
 // ===== WISHLIST =====
 

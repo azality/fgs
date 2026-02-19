@@ -565,6 +565,27 @@ export function Onboarding() {
                 >
                   Join Existing Family
                 </Button>
+                
+                <div className="pt-4 border-t">
+                  <Button
+                    onClick={async () => {
+                      // Clear all auth tokens and data
+                      await supabase.auth.signOut();
+                      localStorage.clear();
+                      sessionStorage.clear();
+                      toast.success("Logged out successfully");
+                      // Reset to login screen
+                      setStep(0);
+                      setEmail("");
+                      setPassword("");
+                      setName("");
+                    }}
+                    variant="ghost"
+                    className="w-full text-gray-600 hover:text-gray-900"
+                  >
+                    ← Back to Login
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           )

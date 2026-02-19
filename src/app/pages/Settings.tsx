@@ -15,9 +15,11 @@ import { useTrackableItems } from "../hooks/useTrackableItems";
 import { useMilestones } from "../hooks/useMilestones";
 import { createChild, generateInviteCode } from "../../utils/api";
 import { toast } from "sonner";
-import { Lock, Plus, X, Gift, Target, Award, Sparkles, TrendingUp, TrendingDown, Users, AlertTriangle, Heart, UserCheck, UserX } from "lucide-react";
+import { Lock, Plus, X, Gift, Target, Award, Sparkles, TrendingUp, TrendingDown, Users, AlertTriangle, Heart, UserCheck, UserX, Trash2 } from "lucide-react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info.tsx";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "../components/ui/alert-dialog";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { deduplicateTrackableItems } from "../../utils/api";
 import { supabase } from "../../../utils/supabase/client";
 
@@ -34,7 +36,7 @@ const deduplicateByName = <T extends { id: string; name: string }>(items: T[]): 
 
 export function Settings() {
   const navigate = useNavigate();
-  const { isParentMode } = useAuth();
+  const { isParentMode, accessToken } = useAuth();
   const { rewards, addReward } = useRewards();
   const { items: trackableItems, addItem } = useTrackableItems();
   const { milestones, addMilestone } = useMilestones();
@@ -472,6 +474,98 @@ export function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [familyId]);
 
+  // Detect duplicate rewards by name
+  const duplicateRewards = rewards.reduce((acc, reward, index, arr) => {
+    const duplicates = arr.filter(r => r.name.toLowerCase().trim() === reward.name.toLowerCase().trim());
+    if (duplicates.length > 1 && !acc.some(d => d.name.toLowerCase().trim() === reward.name.toLowerCase().trim())) {
+      acc.push({ name: reward.name, count: duplicates.length, ids: duplicates.map(d => d.id) });
+    }
+    return acc;
+  }, [] as Array<{ name: string; count: number; ids: string[] }>);
+
+  // Detect duplicate milestones by name
+  const duplicateMilestones = milestones.reduce((acc, milestone, index, arr) => {
+    const duplicates = arr.filter(m => m.name.toLowerCase().trim() === milestone.name.toLowerCase().trim());
+    if (duplicates.length > 1 && !acc.some(d => d.name.toLowerCase().trim() === milestone.name.toLowerCase().trim())) {
+      acc.push({ name: milestone.name, count: duplicates.length, ids: duplicates.map(d => d.id) });
+    }
+    return acc;
+  }, [] as Array<{ name: string; count: number; ids: string[] }>);
+
+  const handleBulkDeleteDuplicateRewards = async () => {
+    if (!accessToken) {
+      toast.error('Authentication required');
+      return;
+    }
+
+    try {
+      let deletedCount = 0;
+      
+      // For each duplicate group, keep the first one and delete the rest
+      for (const dup of duplicateRewards) {
+        const idsToDelete = dup.ids.slice(1); // Keep first, delete rest
+        
+        for (const id of idsToDelete) {
+          const response = await fetch(
+            `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/rewards/${id}`,
+            {
+              method: 'DELETE',
+              headers: { 'Authorization': `Bearer ${accessToken}` }
+            }
+          );
+          
+          if (response.ok) {
+            deletedCount++;
+          }
+        }
+      }
+      
+      toast.success(`Removed ${deletedCount} duplicate reward${deletedCount === 1 ? '' : 's'}!`);
+      // Reload rewards
+      window.location.reload();
+    } catch (error) {
+      console.error('Bulk delete error:', error);
+      toast.error('Failed to remove duplicates');
+    }
+  };
+
+  const handleBulkDeleteDuplicateMilestones = async () => {
+    if (!accessToken) {
+      toast.error('Authentication required');
+      return;
+    }
+
+    try {
+      let deletedCount = 0;
+      
+      // For each duplicate group, keep the first one and delete the rest
+      for (const dup of duplicateMilestones) {
+        const idsToDelete = dup.ids.slice(1); // Keep first, delete rest
+        
+        for (const id of idsToDelete) {
+          const response = await fetch(
+            `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/milestones/${id}`,
+            {
+              method: 'DELETE',
+              headers: { 'Authorization': `Bearer ${accessToken}` }
+            }
+          );
+          
+          if (response.ok) {
+            deletedCount++;
+          }
+        }
+      }
+      
+      toast.success(`Removed ${deletedCount} duplicate milestone${deletedCount === 1 ? '' : 's'}!`);
+      // Reload page
+      window.location.reload();
+    } catch (error) {
+      console.error('Bulk delete error:', error);
+      toast.error('Failed to remove duplicates');
+    }
+  };
+
   const smallRewards = rewards.filter(r => r.category === 'small');
   const mediumRewards = rewards.filter(r => r.category === 'medium');
   const largeRewards = rewards.filter(r => r.category === 'large');
@@ -891,6 +985,62 @@ export function Settings() {
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
+              {/* Duplicate Rewards Warning */}
+              {duplicateRewards.length > 0 && (
+                <Alert variant="destructive" className="border-orange-500 bg-orange-50 text-orange-900">
+                  <AlertTriangle className="h-4 w-4 text-orange-600" />
+                  <AlertTitle className="text-orange-900">Duplicate Rewards Detected</AlertTitle>
+                  <AlertDescription className="text-orange-800">
+                    <p className="mb-2">You have duplicate rewards with the same name. This may cause confusion:</p>
+                    <ul className="list-disc list-inside space-y-1 mb-3">
+                      {duplicateRewards.map(dup => (
+                        <li key={dup.name}>
+                          <strong>{dup.name}</strong> appears {dup.count} times
+                        </li>
+                      ))}
+                    </ul>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-2 bg-white border-orange-300 text-orange-900 hover:bg-orange-100"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Clean Up Duplicates
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Remove All Duplicate Rewards?</AlertDialogTitle>
+                          <AlertDialogDescription asChild>
+                            <div>
+                              This will keep one copy of each reward and delete all duplicates. This action cannot be undone.
+                              <div className="mt-3 p-3 bg-gray-50 rounded-md">
+                                <p className="font-semibold text-sm mb-1">Will be removed:</p>
+                                <ul className="text-sm space-y-1">
+                                  {duplicateRewards.map(dup => (
+                                    <li key={dup.name}>
+                                      • {dup.count - 1} duplicate{dup.count - 1 > 1 ? 's' : ''} of <strong>{dup.name}</strong>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            </div>
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={handleBulkDeleteDuplicateRewards} className="bg-orange-600 hover:bg-orange-700">
+                            Remove Duplicates
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </AlertDescription>
+                </Alert>
+              )}
+              
               {/* Small Rewards */}
               <div>
                 <h3 className="font-semibold mb-3 flex items-center gap-2">
@@ -1546,7 +1696,63 @@ export function Settings() {
                 </Dialog>
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-6">
+              {/* Duplicate Milestones Warning */}
+              {duplicateMilestones.length > 0 && (
+                <Alert variant="destructive" className="border-orange-500 bg-orange-50 text-orange-900">
+                  <AlertTriangle className="h-4 w-4 text-orange-600" />
+                  <AlertTitle className="text-orange-900">Duplicate Milestones Detected</AlertTitle>
+                  <AlertDescription className="text-orange-800">
+                    <p className="mb-2">You have duplicate milestones with the same name. This may cause confusion:</p>
+                    <ul className="list-disc list-inside space-y-1 mb-3">
+                      {duplicateMilestones.map(dup => (
+                        <li key={dup.name}>
+                          <strong>{dup.name}</strong> appears {dup.count} times
+                        </li>
+                      ))}
+                    </ul>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-2 bg-white border-orange-300 text-orange-900 hover:bg-orange-100"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Clean Up Duplicates
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Remove All Duplicate Milestones?</AlertDialogTitle>
+                          <AlertDialogDescription asChild>
+                            <div>
+                              This will keep one copy of each milestone and delete all duplicates. This action cannot be undone.
+                              <div className="mt-3 p-3 bg-gray-50 rounded-md">
+                                <p className="font-semibold text-sm mb-1">Will be removed:</p>
+                                <ul className="text-sm space-y-1">
+                                  {duplicateMilestones.map(dup => (
+                                    <li key={dup.name}>
+                                      • {dup.count - 1} duplicate{dup.count - 1 > 1 ? 's' : ''} of <strong>{dup.name}</strong>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            </div>
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={handleBulkDeleteDuplicateMilestones} className="bg-orange-600 hover:bg-orange-700">
+                            Remove Duplicates
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </AlertDescription>
+                </Alert>
+              )}
+              
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {milestones.map(milestone => (
                   <div key={milestone.id} className="p-4 border rounded-lg text-center bg-gradient-to-br from-yellow-50 to-orange-50">
