@@ -1,0 +1,395 @@
+import { motion } from "motion/react";
+import { useFamilyContext } from "../contexts/FamilyContext";
+import { useTrackableItems } from "../hooks/useTrackableItems";
+import { useMilestones } from "../hooks/useMilestones";
+import { useRewards } from "../hooks/useRewards";
+import { useChallenges } from "../hooks/useChallenges";
+import { PointsDisplay } from "../components/kid-mode/PointsDisplay";
+import { AdventureMap } from "../components/kid-mode/AdventureMap";
+import { QuestCard } from "../components/kid-mode/QuestCard";
+import { MosqueBuild } from "../components/kid-mode/MosqueBuild";
+import { GentleCorrection } from "../components/kid-mode/GentleCorrection";
+import { Confetti } from "../components/effects/Confetti";
+import { FloatingActionButton } from "../components/mobile/FloatingActionButton";
+import { useState, useEffect } from "react";
+import { Flame, Award, Heart, UserCog } from "lucide-react";
+import { useNavigate } from "react-router";
+import { Button } from "../components/ui/button";
+
+export function KidDashboard() {
+  const { getCurrentChild, pointEvents, submitRecovery } = useFamilyContext();
+  const { items: trackableItems } = useTrackableItems();
+  const { milestones } = useMilestones();
+  const { rewards } = useRewards();
+  const { challenges } = useChallenges();
+  const child = getCurrentChild();
+  const navigate = useNavigate();
+
+  if (!child) {
+    return (
+      <div className="flex items-center justify-center h-96 bg-gradient-to-br from-[var(--kid-midnight-blue)] to-[#2C3E50] rounded-[1.5rem] text-white">
+        <p>Please select a child to view their adventure! 🌙</p>
+      </div>
+    );
+  }
+
+  // Calculate data
+  const nextMilestone = milestones
+    .filter((m) => m.points > child.currentPoints)
+    .sort((a, b) => a.points - b.points)[0];
+
+  const currentMilestone = milestones
+    .filter((m) => m.points <= child.currentPoints)
+    .sort((a, b) => b.points - a.points)[0];
+
+  const targetReward = rewards.find((r) => r.id === child.targetRewardId);
+
+  // Get active challenges
+  const activeChallenges = challenges.filter(
+    (c) => c.status === "available" || c.status === "accepted"
+  );
+
+  // Get today's events
+  const childEvents = pointEvents.filter((e) => e.childId === child.id);
+  const todayEvents = childEvents.filter((e) => {
+    const eventDate = new Date(e.timestamp);
+    const today = new Date();
+    return eventDate.toDateString() === today.toDateString();
+  });
+
+  // Recent negative events with recovery options
+  const recentNegativeEvents = todayEvents
+    .filter((e) => e.points < 0 && !e.recoveryOffered)
+    .slice(0, 2);
+
+  // Calculate streaks for trackable items
+  const habitStreaks = trackableItems
+    .filter((item) => item.type === "habit")
+    .map((item) => {
+      const streakData = child.streaks?.[item.id];
+      return {
+        itemId: item.id,
+        name: item.name,
+        current: streakData?.current || 0,
+        longest: streakData?.longest || 0,
+      };
+    })
+    .filter((s) => s.current > 0)
+    .sort((a, b) => b.current - a.current);
+
+  // Adventure Map lands (based on milestones)
+  const lands = milestones.map((milestone, index) => ({
+    id: milestone.id,
+    name: milestone.name,
+    emoji: getMilestoneEmoji(milestone.name),
+    pointsRequired: milestone.points,
+    isUnlocked: child.currentPoints >= milestone.points,
+    isCurrent:
+      currentMilestone?.id === milestone.id ||
+      (!currentMilestone && index === 0),
+    description: milestone.title || "A land of growth and learning",
+  }));
+
+  // Map challenges to quest cards
+  const quests = activeChallenges.map((challenge) => {
+    const accepted = challenge.status === 'accepted' || challenge.status === 'completed';
+    const completed = challenge.status === 'completed';
+
+    // Use challenge progress
+    const progress = challenge.progress.current;
+    const total = challenge.progress.target;
+
+    return {
+      id: challenge.id,
+      title: challenge.title,
+      description: challenge.description,
+      progress,
+      total,
+      icon: challenge.icon || getChallengeIcon(challenge.type),
+      bonusPoints: challenge.bonusPoints,
+      isCompleted: completed,
+      isLocked: challenge.status === 'available',
+    };
+  });
+
+  // Get singleton items for daily checklist (Salah)
+  const salahItems = trackableItems.filter(
+    (item) => item.type === "habit" && item.isSingleton
+  );
+
+  // Check which Salah were logged today
+  const todaySalahEvents = todayEvents.filter((e) =>
+    salahItems.some((s) => s.id === e.trackableItemId)
+  );
+
+  const salahProgress = todaySalahEvents.length;
+  const salahTotal = salahItems.length;
+
+  return (
+    <div className="min-h-screen bg-[var(--kid-soft-cream)] pb-12">
+      {/* Floating Action Button - Mobile Only */}
+      <FloatingActionButton />
+
+      {/* Header Section */}
+      <div className="bg-gradient-to-br from-[var(--kid-midnight-blue)] to-[#2C3E50] pt-8 pb-12 px-4 md:px-6 rounded-b-[2rem] shadow-lg mb-8 relative">
+        {/* Parent Mode Button - Top Right */}
+        <div className="absolute top-4 right-4">
+          <Button
+            onClick={() => {
+              // Clear child session
+              localStorage.removeItem('child_id');
+              localStorage.removeItem('user_role');
+              // Navigate to parent login
+              navigate('/login');
+            }}
+            variant="outline"
+            size="sm"
+            className="bg-white/20 hover:bg-white/30 text-white border-white/40"
+          >
+            <UserCog className="h-4 w-4 mr-2" />
+            Parent Mode
+          </Button>
+        </div>
+
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-6xl mx-auto"
+        >
+          <h1 className="text-3xl md:text-4xl font-bold text-white text-center mb-2">
+            Assalamu Alaikum, {child.name}! 🌙
+          </h1>
+          <p className="text-white/80 text-center mb-6">
+            Continue your journey of growth and learning
+          </p>
+
+          {/* Points Display */}
+          <div className="max-w-md mx-auto">
+            <PointsDisplay
+              currentPoints={child.currentPoints}
+              nextMilestone={
+                nextMilestone
+                  ? { name: nextMilestone.name, points: nextMilestone.points }
+                  : undefined
+              }
+              currentTitle={currentMilestone?.name || "Explorer"}
+            />
+          </div>
+        </motion.div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 md:px-6 space-y-8">
+        {/* Quick Access Buttons */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="grid grid-cols-2 gap-4 md:grid-cols-4"
+        >
+          <button
+            onClick={() => navigate("/titles-badges")}
+            className="bg-gradient-to-br from-[var(--kid-warm-gold)] to-[var(--kid-lantern-glow)] rounded-[1rem] p-4 text-white shadow-lg hover:shadow-xl transition-all hover:scale-105"
+          >
+            <Award className="w-8 h-8 mx-auto mb-2" />
+            <p className="text-sm font-semibold">My Badges</p>
+          </button>
+
+          <button
+            onClick={() => navigate("/sadqa")}
+            className="bg-gradient-to-br from-green-500 to-green-700 rounded-[1rem] p-4 text-white shadow-lg hover:shadow-xl transition-all hover:scale-105"
+          >
+            <Heart className="w-8 h-8 mx-auto mb-2 fill-white" />
+            <p className="text-sm font-semibold">Give Sadqa</p>
+          </button>
+
+          <button
+            onClick={() => navigate("/challenges")}
+            className="bg-gradient-to-br from-purple-500 to-purple-700 rounded-[1rem] p-4 text-white shadow-lg hover:shadow-xl transition-all hover:scale-105"
+          >
+            <span className="text-3xl block mb-1">⚔️</span>
+            <p className="text-sm font-semibold">Quests</p>
+          </button>
+
+          <button
+            onClick={() => navigate("/rewards")}
+            className="bg-gradient-to-br from-blue-500 to-blue-700 rounded-[1rem] p-4 text-white shadow-lg hover:shadow-xl transition-all hover:scale-105"
+          >
+            <span className="text-3xl block mb-1">🎁</span>
+            <p className="text-sm font-semibold">Rewards</p>
+          </button>
+        </motion.div>
+
+        {/* Streaks Section */}
+        {habitStreaks.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+          >
+            <h2 className="text-2xl font-bold text-[var(--kid-midnight-blue)] mb-4 flex items-center gap-2">
+              <Flame className="w-6 h-6 text-orange-500" />
+              Your Streaks 🔥
+            </h2>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {habitStreaks.map((streak) => (
+                <motion.div
+                  key={streak.itemId}
+                  whileHover={{ scale: 1.02 }}
+                  className="bg-gradient-to-br from-orange-50 to-red-50 rounded-[1rem] p-4 border-2 border-orange-200 shadow-md"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-semibold text-gray-800">
+                      {streak.name}
+                    </span>
+                    <Flame className="w-5 h-5 text-orange-500" />
+                  </div>
+                  <div className="text-3xl font-bold text-orange-600">
+                    {streak.current} days
+                  </div>
+                  <div className="text-xs text-gray-600 mt-1">
+                    Best: {streak.longest} days
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+
+        {/* Today's Prayer Quest */}
+        {salahItems.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+          >
+            <h2 className="text-2xl font-bold text-[var(--kid-midnight-blue)] mb-4">
+              Today's Prayers 🕌
+            </h2>
+            <QuestCard
+              title="Prayer Warrior"
+              description="Light all 5 lanterns by praying today!"
+              progress={salahProgress}
+              total={salahTotal}
+              icon="🕌"
+              bonusPoints={salahProgress === salahTotal ? 10 : 0}
+              isCompleted={salahProgress === salahTotal}
+            />
+          </motion.div>
+        )}
+
+        {/* Adventure Map */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+          className="bg-white rounded-[1.5rem] p-6 shadow-lg"
+        >
+          <AdventureMap lands={lands} currentPoints={child.currentPoints} />
+        </motion.div>
+
+        {/* Active Quests/Challenges */}
+        {quests.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4 }}
+          >
+            <h2 className="text-2xl font-bold text-[var(--kid-midnight-blue)] mb-4">
+              Your Quests ⚔️
+            </h2>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {quests.slice(0, 6).map((quest) => (
+                <QuestCard key={quest.id} {...quest} />
+              ))}
+            </div>
+          </motion.div>
+        )}
+
+        {/* Target Reward - Mosque Build */}
+        {targetReward && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.5 }}
+          >
+            <h2 className="text-2xl font-bold text-[var(--kid-midnight-blue)] mb-4">
+              Building Your Reward 🏗️
+            </h2>
+            <MosqueBuild
+              currentContribution={child.currentPoints}
+              targetAmount={targetReward.pointCost}
+              rewardName={targetReward.name}
+            />
+          </motion.div>
+        )}
+
+        {/* Gentle Corrections (Recent Negative Events) */}
+        {recentNegativeEvents.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.6 }}
+          >
+            <h2 className="text-2xl font-bold text-[var(--kid-midnight-blue)] mb-4">
+              Opportunities to Grow 🌱
+            </h2>
+            <div className="space-y-4">
+              {recentNegativeEvents.map((event) => (
+                <GentleCorrection
+                  key={event.id}
+                  behavior={
+                    trackableItems.find((i) => i.id === event.trackableItemId)
+                      ?.name || "Behavior"
+                  }
+                  points={event.points}
+                  recoveryOptions={{
+                    apology: true,
+                    reflection: true,
+                    correction: true,
+                  }}
+                  onRecover={async (type) => {
+                    await submitRecovery(event.id, child.id, type);
+                  }}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+
+        {/* Encouragement Footer */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.7 }}
+          className="text-center py-8"
+        >
+          <p className="text-lg text-gray-600 italic">
+            "Every good deed is a step closer to Jannah. Keep going!" 🌟
+          </p>
+        </motion.div>
+      </div>
+    </div>
+  );
+}
+
+// Helper functions
+function getMilestoneEmoji(name: string): string {
+  const lowerName = name.toLowerCase();
+  if (lowerName.includes("makkah") || lowerName.includes("mecca"))
+    return "🕋";
+  if (lowerName.includes("madinah") || lowerName.includes("medina"))
+    return "🕌";
+  if (lowerName.includes("sinai") || lowerName.includes("mount"))
+    return "⛰️";
+  if (lowerName.includes("jerusalem") || lowerName.includes("aqsa"))
+    return "🌙";
+  if (lowerName.includes("scholar")) return "📚";
+  if (lowerName.includes("guardian")) return "🛡️";
+  if (lowerName.includes("star")) return "⭐";
+  return "🗺️";
+}
+
+function getChallengeIcon(type: string): string {
+  if (type === 'daily') return "⚔️";
+  if (type === 'weekly') return "🏆";
+  return "⭐";
+}
