@@ -360,12 +360,12 @@ export async function getEditRequests() {
 export async function resolveEditRequest(
   requestId: string,
   status: 'approved' | 'rejected',
-  resolvedBy: string,
+  resolverId: string,
   resolution?: string
 ) {
-  return apiCall(`/edit-requests/${requestId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ status, resolvedBy, resolution }),
+  return apiCall(`/edit-requests/${requestId}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ status, resolverId, resolution }),
   });
 }
 

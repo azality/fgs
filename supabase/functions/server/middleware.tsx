@@ -95,43 +95,45 @@ async function verifyToken(c: Context) {
 
   // Standard parent JWT verification using manual decode
   try {
-    const parts = token.split('.');
+    // Use Supabase client for JWT verification
+    // The anonClient properly handles all JWT algorithms (HS256, ES256, RS256, etc.)
+    // and validates against the correct project secret
+    const { data: { user }, error } = await anonClient.auth.getUser(token);
     
-    if (parts.length !== 3) {
+    if (error || !user) {
+      console.error('❌ JWT verification failed:', {
+        errorMessage: error?.message,
+        errorName: error?.name,
+        errorStatus: error?.status,
+        hasUser: !!user,
+        tokenPreview: token?.substring(0, 30) + '...'
+      });
       return null;
     }
     
-    // Decode payload using base64url decoding
-    const base64Url = parts[1];
-    let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    while (base64.length % 4 !== 0) {
-      base64 += '=';
-    }
+    console.log('✅ JWT verified successfully', {
+      userId: user.id,
+      email: user.email,
+      role: user.user_metadata?.role || 'parent'
+    });
     
-    const jsonPayload = atob(base64);
-    const payload = JSON.parse(jsonPayload);
-    
-    // Validate expiration
-    if (payload.exp && payload.exp * 1000 < Date.now()) {
-      return null;
-    }
-    
-    // Validate required fields
-    if (!payload.sub) {
-      return null;
-    }
-    
-    // Return user object constructed from JWT payload
+    // Return verified user object
     return {
-      id: payload.sub,
-      email: payload.email || '',
-      role: payload.user_metadata?.role || payload.role || 'parent',
-      user_metadata: payload.user_metadata || { role: 'parent', name: payload.email || '' },
-      app_metadata: payload.app_metadata || {},
-      aud: payload.aud || '',
-      created_at: payload.iat ? new Date(payload.iat * 1000).toISOString() : new Date().toISOString()
+      id: user.id,
+      email: user.email || '',
+      role: user.user_metadata?.role || user.role || 'parent',
+      user_metadata: user.user_metadata || { role: 'parent', name: user.email || '' },
+      app_metadata: user.app_metadata || {},
+      aud: user.aud || '',
+      created_at: user.created_at || new Date().toISOString()
     };
   } catch (error) {
+    console.error('❌ Error during JWT verification (exception):', {
+      error,
+      errorMessage: error?.message,
+      errorStack: error?.stack,
+      tokenPreview: token?.substring(0, 30) + '...'
+    });
     return null;
   }
 }

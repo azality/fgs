@@ -46,7 +46,7 @@ export function Welcome() {
           </Card>
 
           {/* Kid Login */}
-          <Card className="hover:shadow-2xl transition-all cursor-pointer group" onClick={() => navigate('/kid-login')}>
+          <Card className="hover:shadow-2xl transition-all cursor-pointer group" onClick={() => navigate('/kid-login-new')}>
             <CardContent className="p-8 text-center space-y-4">
               <div className="bg-gradient-to-br from-yellow-100 to-orange-100 group-hover:from-yellow-200 group-hover:to-orange-200 transition-all w-20 h-20 rounded-full flex items-center justify-center mx-auto">
                 <span className="text-5xl">👶</span>

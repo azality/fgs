@@ -15,9 +15,11 @@ import { useTrackableItems } from "../hooks/useTrackableItems";
 import { useMilestones } from "../hooks/useMilestones";
 import { createChild, generateInviteCode } from "../../utils/api";
 import { toast } from "sonner";
-import { Lock, Plus, X, Gift, Target, Award, Sparkles, TrendingUp, TrendingDown, Users, AlertTriangle, Heart } from "lucide-react";
+import { Lock, Plus, X, Gift, Target, Award, Sparkles, TrendingUp, TrendingDown, Users, AlertTriangle, Heart, UserCheck, UserX } from "lucide-react";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info.tsx";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { deduplicateTrackableItems } from "../../utils/api";
+import { supabase } from "../../../utils/supabase/client";
 
 // Helper function to deduplicate items by name (client-side safety net)
 const deduplicateByName = <T extends { id: string; name: string }>(items: T[]): T[] => {
@@ -31,6 +33,7 @@ const deduplicateByName = <T extends { id: string; name: string }>(items: T[]): 
 };
 
 export function Settings() {
+  const navigate = useNavigate();
   const { isParentMode } = useAuth();
   const { rewards, addReward } = useRewards();
   const { items: trackableItems, addItem } = useTrackableItems();
@@ -38,6 +41,10 @@ export function Settings() {
   const { children, familyId, family, loadFamilyData } = useFamilyContext();
   const [dedupeLoading, setDedupeLoading] = useState(false);
   const [generatingInvite, setGeneratingInvite] = useState(false);
+
+  // Join Requests State
+  const [joinRequests, setJoinRequests] = useState<any[]>([]);
+  const [loadingJoinRequests, setLoadingJoinRequests] = useState(false);
 
   // Child Form State
   const [childName, setChildName] = useState("");
@@ -125,8 +132,6 @@ export function Settings() {
   const [milestoneName, setMilestoneName] = useState("");
   const [milestonePoints, setMilestonePoints] = useState("");
   const [showMilestoneDialog, setShowMilestoneDialog] = useState(false);
-
-  const navigate = useNavigate();
 
   // SECURITY: Redirect kids away from Settings page
   useEffect(() => {
@@ -305,6 +310,167 @@ export function Settings() {
       setGeneratingInvite(false);
     }
   };
+
+  // Fetch join requests
+  const fetchJoinRequests = async () => {
+    if (!familyId) return;
+    
+    setLoadingJoinRequests(true);
+    try {
+      // Get token from Supabase session (NOT localStorage)
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      console.log('🔍 fetchJoinRequests - Session check:', {
+        hasSession: !!session,
+        hasAccessToken: !!session?.access_token,
+        tokenLength: session?.access_token?.length,
+        tokenPreview: session?.access_token ? `${session.access_token.substring(0, 40)}...` : 'NO TOKEN',
+        sessionError: sessionError?.message
+      });
+      
+      if (sessionError || !session?.access_token) {
+        console.error('❌ No valid session to fetch join requests - logging out');
+        toast.error('Session expired. Please log in again.');
+        // Clear all localStorage and redirect to login
+        localStorage.clear();
+        navigate('/login');
+        return;
+      }
+      
+      const token = session.access_token;
+      
+      // Extra validation: make sure token is not the string "null"
+      if (token === 'null' || token === 'undefined' || token.length < 20) {
+        console.error('❌ Invalid token detected:', { token, length: token.length });
+        toast.error('Invalid session. Please log in again.');
+        // Force sign out to clear corrupted Supabase in-memory session
+        await supabase.auth.signOut();
+        localStorage.clear();
+        navigate('/login');
+        return;
+      }
+      
+      console.log('📋 Fetching join requests for family:', familyId);
+      console.log('🔐 Token being sent:', {
+        length: token.length,
+        preview: `${token.substring(0, 50)}...`,
+        isNull: token === 'null',
+        type: typeof token
+      });
+      
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/families/${familyId}/join-requests`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'apikey': publicAnonKey
+          }
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ Fetched join requests:', data);
+        setJoinRequests(data);
+      } else {
+        const errorData = await response.json();
+        console.error('❌ Failed to fetch join requests:', response.status, errorData);
+        
+        // If we get a 401, session is invalid
+        if (response.status === 401) {
+          toast.error('Session expired. Please log in again.');
+          localStorage.clear();
+          navigate('/login');
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error fetching join requests:', error);
+    } finally {
+      setLoadingJoinRequests(false);
+    }
+  };
+
+  // Approve join request
+  const handleApproveJoinRequest = async (requestId: string) => {
+    if (!familyId) return;
+
+    try {
+      // Get token from Supabase session
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast.error('No valid session');
+        return;
+      }
+
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/families/${familyId}/join-requests/${requestId}/approve`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey': publicAnonKey
+          }
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        toast.success(data.message || 'Join request approved!');
+        fetchJoinRequests(); // Refresh the list
+        loadFamilyData(); // Refresh family data
+      } else {
+        const error = await response.json();
+        toast.error(error.error || 'Failed to approve request');
+      }
+    } catch (error) {
+      console.error('Error approving join request:', error);
+      toast.error('Failed to approve request');
+    }
+  };
+
+  // Deny join request
+  const handleDenyJoinRequest = async (requestId: string) => {
+    if (!familyId) return;
+
+    try {
+      // Get token from Supabase session
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast.error('No valid session');
+        return;
+      }
+
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/families/${familyId}/join-requests/${requestId}/deny`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey': publicAnonKey
+          }
+        }
+      );
+
+      if (response.ok) {
+        toast.success('Join request denied');
+        fetchJoinRequests(); // Refresh the list
+      } else {
+        const error = await response.json();
+        toast.error(error.error || 'Failed to deny request');
+      }
+    } catch (error) {
+      console.error('Error denying join request:', error);
+      toast.error('Failed to deny request');
+    }
+  };
+
+  // Fetch join requests on mount
+  useEffect(() => {
+    if (familyId) {
+      fetchJoinRequests();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [familyId]);
 
   const smallRewards = rewards.filter(r => r.category === 'small');
   const mediumRewards = rewards.filter(r => r.category === 'medium');
@@ -492,6 +658,132 @@ export function Settings() {
                             <>
                               <Plus className="h-4 w-4 mr-2" />
                               Generate Invite Code
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Pending Join Requests */}
+              {joinRequests.length > 0 && (
+                <div className="mt-6 bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-lg p-4">
+                  <div className="flex items-start gap-3">
+                    <Users className="h-5 w-5 text-green-600 mt-0.5" />
+                    <div className="flex-1">
+                      <h4 className="font-semibold text-green-900 mb-1">Pending Join Requests ({joinRequests.length})</h4>
+                      <p className="text-sm text-green-800 mb-3">
+                        Review requests from people who want to join your family
+                      </p>
+                      
+                      <div className="space-y-3">
+                        {joinRequests.map((request) => (
+                          <div key={request.id} className="bg-white border-2 border-green-200 rounded-lg p-4">
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex-1">
+                                <h5 className="font-semibold text-gray-900">{request.requesterName}</h5>
+                                <p className="text-sm text-gray-600">{request.requesterEmail}</p>
+                                <div className="mt-2 flex gap-2 flex-wrap">
+                                  <Badge variant="outline">{request.relationship}</Badge>
+                                  <Badge variant="outline">{request.requestedRole}</Badge>
+                                  <span className="text-xs text-gray-500">
+                                    {new Date(request.createdAt).toLocaleDateString()}
+                                  </span>
+                                </div>
+                              </div>
+                              
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleApproveJoinRequest(request.id)}
+                                  className="bg-green-600 hover:bg-green-700"
+                                >
+                                  <UserCheck className="h-4 w-4 mr-1" />
+                                  Approve
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleDenyJoinRequest(request.id)}
+                                  className="border-red-300 text-red-600 hover:bg-red-50"
+                                >
+                                  <UserX className="h-4 w-4 mr-1" />
+                                  Deny
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Kid Login Code */}
+              <div className="mt-6 bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-200 rounded-lg p-4">
+                <div className="flex items-start gap-3">
+                  <Lock className="h-5 w-5 text-amber-600 mt-0.5" />
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-amber-900 mb-1">Kid Login Code</h4>
+                    <p className="text-sm text-amber-800 mb-3">
+                      Kids can use this family code to log in on their devices (iPad, phone, etc.)
+                    </p>
+                    
+                    {family?.inviteCode ? (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 bg-white border-2 border-amber-300 rounded-lg px-4 py-3 font-mono text-2xl font-bold text-amber-900 text-center tracking-widest">
+                            {family.inviteCode}
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              navigator.clipboard.writeText(family.inviteCode || '');
+                              toast.success('Family code copied!');
+                            }}
+                            className="shrink-0"
+                          >
+                            Copy
+                          </Button>
+                        </div>
+                        <div className="mt-3 space-y-1">
+                          <p className="text-xs text-amber-700">
+                            <strong>How kids login:</strong>
+                          </p>
+                          <ol className="text-xs text-amber-700 ml-4 space-y-1 list-decimal">
+                            <li>Open the app and tap "Kid Login"</li>
+                            <li>Enter this family code: <span className="font-mono font-semibold">{family.inviteCode}</span></li>
+                            <li>Tap their name/avatar</li>
+                            <li>Enter their 4-digit PIN</li>
+                          </ol>
+                          <p className="text-xs text-amber-600 mt-2">
+                            ✨ No parent login required on their device!
+                          </p>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="space-y-3">
+                        <p className="text-sm text-amber-700">
+                          Generate a family code first to enable kid login!
+                        </p>
+                        <Button
+                          onClick={handleGenerateInviteCode}
+                          disabled={generatingInvite}
+                          className="w-full sm:w-auto"
+                        >
+                          {generatingInvite ? (
+                            <>
+                              <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2" />
+                              Generating...
+                            </>
+                          ) : (
+                            <>
+                              <Plus className="h-4 w-4 mr-2" />
+                              Generate Family Code
                             </>
                           )}
                         </Button>

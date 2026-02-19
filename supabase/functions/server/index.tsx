@@ -99,6 +99,96 @@ app.get("/make-server-f116e23f/health", (c) => {
   return c.json({ status: "ok" });
 });
 
+// PUBLIC: Get children for family (no auth required)
+// Used by kid login to display available children
+app.get("/make-server-f116e23f/public/families/:familyId/children", async (c) => {
+  try {
+    const familyId = c.req.param('familyId');
+    console.log(`📡 Public request for family ${familyId} children`);
+    
+    if (!familyId) {
+      return c.json({ error: 'Family ID required' }, 400);
+    }
+    
+    const allChildren = await kv.getByPrefix('child:');
+    const familyChildren = allChildren.filter((child: any) => child.familyId === familyId);
+    
+    const publicChildren = familyChildren.map((child: any) => ({
+      id: child.id,
+      name: child.name,
+      avatar: child.avatar || '👶',
+      familyId: child.familyId
+    }));
+    
+    console.log(`✅ Returning ${publicChildren.length} children`);
+    return c.json(publicChildren);
+  } catch (error) {
+    console.error('❌ Error in public children endpoint:', error);
+    return c.json({ error: 'Failed to get children' }, 500);
+  }
+});
+
+// NEW: Verify family code and return kids (no auth required)
+// Used by kid login to validate family code and show kid selection
+app.post("/make-server-f116e23f/public/verify-family-code", async (c) => {
+  try {
+    const { familyCode } = await c.req.json();
+    
+    if (!familyCode || typeof familyCode !== 'string') {
+      return c.json({ 
+        success: false, 
+        error: 'Family code is required' 
+      }, 400);
+    }
+    
+    // Look up family by invite code
+    const familyId = await kv.get(`invite:${familyCode.toUpperCase()}`);
+    
+    if (!familyId) {
+      return c.json({ 
+        success: false, 
+        error: 'Invalid family code' 
+      }, 404);
+    }
+    
+    // Get family info
+    const family = await kv.get(familyId);
+    
+    if (!family) {
+      return c.json({ 
+        success: false, 
+        error: 'Family not found' 
+      }, 404);
+    }
+    
+    // Get all children in the family
+    const allChildren = await kv.getByPrefix('child:');
+    const familyChildren = allChildren.filter((child: any) => child.familyId === familyId);
+    
+    // Return public kid info for selection
+    const kids = familyChildren.map((child: any) => ({
+      id: child.id,
+      name: child.name,
+      avatar: child.avatar || '👶'
+    }));
+    
+    return c.json({
+      success: true,
+      familyId,
+      familyName: family.name,
+      kids,
+      message: `Welcome to ${family.name}! 🏡`
+    });
+    
+  } catch (error) {
+    console.error('Error verifying family code:', error);
+    return c.json({ 
+      success: false, 
+      error: 'Failed to verify family code' 
+    }, 500);
+  }
+});
+
 // ===== AUTHENTICATION =====
 
 // Sign up new user (parent)
@@ -312,6 +402,254 @@ app.post(
   }
 );
 
+// ===== JOIN REQUEST SYSTEM (Approval Required) =====
+
+// Submit join request (requires admin approval)
+app.post(
+  "/make-server-f116e23f/families/join-request",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const { inviteCode, requestedRole, relationship } = await c.req.json();
+      const userId = getAuthUserId(c);
+      
+      if (!inviteCode || typeof inviteCode !== 'string') {
+        return c.json({ error: 'Invalid invite code' }, 400);
+      }
+      
+      // Look up family by invite code
+      const familyId = await kv.get(`invite:${inviteCode.toUpperCase()}`);
+      
+      if (!familyId) {
+        return c.json({ error: 'Invalid or expired invite code' }, 404);
+      }
+      
+      const family = await kv.get(familyId);
+      
+      if (!family) {
+        return c.json({ error: 'Family not found' }, 404);
+      }
+      
+      // Check if user is already in a family
+      const user = await kv.get(`user:${userId}`);
+      
+      if (user?.familyId) {
+        return c.json({ error: 'You are already part of a family' }, 400);
+      }
+      
+      // Check if user already has a pending request
+      const existingRequests = await kv.getByPrefix('joinreq:');
+      const userPendingRequest = existingRequests.find(
+        (req: any) => req.requesterId === userId && req.status === 'pending'
+      );
+      
+      if (userPendingRequest) {
+        return c.json({ 
+          error: 'You already have a pending join request', 
+          existingRequest: userPendingRequest 
+        }, 400);
+      }
+      
+      // Create join request
+      const requestId = `joinreq:${Date.now()}:${userId}`;
+      const joinRequest = {
+        id: requestId,
+        familyId,
+        requesterId: userId,
+        requesterName: user?.name || 'Unknown',
+        requesterEmail: user?.email || 'Unknown',
+        requestedRole: requestedRole || 'parent',
+        relationship: relationship || 'spouse',
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        reviewedBy: null,
+        reviewedAt: null
+      };
+      
+      await kv.set(requestId, joinRequest);
+      
+      return c.json({ 
+        success: true, 
+        request: joinRequest,
+        message: `Join request submitted to ${family.name}. Waiting for admin approval.` 
+      });
+    } catch (error) {
+      console.error('Join request error:', error);
+      return c.json({ error: 'Failed to submit join request' }, 500);
+    }
+  }
+);
+
+// Get pending join requests for a family (admin only)
+app.get(
+  "/make-server-f116e23f/families/:familyId/join-requests",
+  requireAuth,
+  requireParent,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const familyId = c.req.param('familyId');
+      
+      // Get all join requests
+      const allRequests = await kv.getByPrefix('joinreq:');
+      
+      // Filter by family and pending status
+      const pendingRequests = allRequests.filter(
+        (req: any) => req.familyId === familyId && req.status === 'pending'
+      );
+      
+      return c.json(pendingRequests);
+    } catch (error) {
+      console.error('Get join requests error:', error);
+      return c.json({ error: 'Failed to get join requests' }, 500);
+    }
+  }
+);
+
+// Approve join request (admin only)
+app.post(
+  "/make-server-f116e23f/families/:familyId/join-requests/:requestId/approve",
+  requireAuth,
+  requireParent,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const familyId = c.req.param('familyId');
+      const requestId = c.req.param('requestId');
+      const reviewerId = getAuthUserId(c);
+      
+      // Get the join request
+      const joinRequest = await kv.get(requestId);
+      
+      if (!joinRequest) {
+        return c.json({ error: 'Join request not found' }, 404);
+      }
+      
+      if (joinRequest.familyId !== familyId) {
+        return c.json({ error: 'Join request does not belong to this family' }, 403);
+      }
+      
+      if (joinRequest.status !== 'pending') {
+        return c.json({ error: 'Join request already processed' }, 400);
+      }
+      
+      // Get family and user
+      const family = await kv.get(familyId);
+      const requester = await kv.get(`user:${joinRequest.requesterId}`);
+      
+      if (!family || !requester) {
+        return c.json({ error: 'Family or user not found' }, 404);
+      }
+      
+      // Add user to family
+      if (!family.parentIds.includes(joinRequest.requesterId)) {
+        family.parentIds.push(joinRequest.requesterId);
+        await kv.set(familyId, family);
+      }
+      
+      // Update user record
+      requester.familyId = familyId;
+      requester.role = joinRequest.requestedRole;
+      await kv.set(`user:${joinRequest.requesterId}`, requester);
+      
+      // Update join request status
+      joinRequest.status = 'approved';
+      joinRequest.reviewedBy = reviewerId;
+      joinRequest.reviewedAt = new Date().toISOString();
+      await kv.set(requestId, joinRequest);
+      
+      return c.json({ 
+        success: true, 
+        message: `${requester.name} has been added to ${family.name}!`,
+        family,
+        joinRequest
+      });
+    } catch (error) {
+      console.error('Approve join request error:', error);
+      return c.json({ error: 'Failed to approve join request' }, 500);
+    }
+  }
+);
+
+// Deny join request (admin only)
+app.post(
+  "/make-server-f116e23f/families/:familyId/join-requests/:requestId/deny",
+  requireAuth,
+  requireParent,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const familyId = c.req.param('familyId');
+      const requestId = c.req.param('requestId');
+      const reviewerId = getAuthUserId(c);
+      
+      // Get the join request
+      const joinRequest = await kv.get(requestId);
+      
+      if (!joinRequest) {
+        return c.json({ error: 'Join request not found' }, 404);
+      }
+      
+      if (joinRequest.familyId !== familyId) {
+        return c.json({ error: 'Join request does not belong to this family' }, 403);
+      }
+      
+      if (joinRequest.status !== 'pending') {
+        return c.json({ error: 'Join request already processed' }, 400);
+      }
+      
+      // Update join request status
+      joinRequest.status = 'denied';
+      joinRequest.reviewedBy = reviewerId;
+      joinRequest.reviewedAt = new Date().toISOString();
+      await kv.set(requestId, joinRequest);
+      
+      return c.json({ 
+        success: true, 
+        message: 'Join request denied',
+        joinRequest
+      });
+    } catch (error) {
+      console.error('Deny join request error:', error);
+      return c.json({ error: 'Failed to deny join request' }, 500);
+    }
+  }
+);
+
+// Get my own join request (no familyId required)
+app.get(
+  "/make-server-f116e23f/auth/my-join-request",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const userId = getAuthUserId(c);
+      
+      // Get all join requests
+      const allRequests = await kv.getByPrefix('joinreq:');
+      
+      // Find requests by this user (should only be one active)
+      const myRequests = allRequests.filter(
+        (req: any) => req.requesterId === userId
+      );
+      
+      // Return the most recent one
+      if (myRequests.length > 0) {
+        const mostRecent = myRequests.sort((a: any, b: any) => 
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        )[0];
+        return c.json(mostRecent);
+      }
+      
+      return c.json({ error: 'No join request found' }, 404);
+    } catch (error) {
+      console.error('Get my join request error:', error);
+      return c.json({ error: 'Failed to get join request' }, 500);
+    }
+  }
+);
+
 // Generate or regenerate invite code for existing family
 app.post(
   "/make-server-f116e23f/families/:id/generate-invite-code",
@@ -490,30 +828,144 @@ async function hashPin(pin: string): Promise<string> {
   return hashHex;
 }
 
+// NEW: Kid Login with Family Code + Child ID
+// POST /kid/login - Auth endpoint for kids using family code + childId + PIN
+app.post(
+  "/make-server-f116e23f/kid/login",
+  async (c) => {
+    try {
+      const { familyCode, childId, pin } = await c.req.json();
+      
+      if (!familyCode || !childId || !pin) {
+        return c.json({ 
+          success: false, 
+          error: 'Family code, child ID, and PIN are required' 
+        }, 400);
+      }
+      
+      // Get device hash for rate limiting
+      const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Real-IP") || c.req.header("X-Forwarded-For")?.split(',')[0] || "unknown";
+      const userAgent = c.req.header("User-Agent") || "unknown";
+      const deviceHash = getDeviceHash(ip, userAgent);
+      
+      // Look up family by invite code
+      const familyId = await kv.get(`invite:${familyCode.toUpperCase()}`);
+      if (!familyId) {
+        return c.json({ 
+          success: false, 
+          error: 'Invalid family code' 
+        }, 404);
+      }
+      
+      // Get the child directly by ID
+      const child = await kv.get(childId);
+      
+      if (!child) {
+        return c.json({ 
+          success: false, 
+          error: 'Child not found' 
+        }, 404);
+      }
+      
+      // Verify child belongs to the family
+      if (child.familyId !== familyId) {
+        return c.json({ 
+          success: false, 
+          error: 'Child not found in this family' 
+        }, 404);
+      }
+      
+      // Check if PIN attempts are locked
+      const lockStatus = await isPinLocked(child.id, deviceHash);
+      if (lockStatus.locked) {
+        return c.json({
+          success: false,
+          error: 'Too many failed attempts. Please try again later.',
+          locked: true,
+          retryAfter: lockStatus.retryAfter
+        }, 429);
+      }
+      
+      // Verify PIN
+      const hashedPin = await hashPin(pin);
+      if (child.pin !== hashedPin) {
+        // Track failure
+        const failureResult = await trackPinFailure(child.id, deviceHash);
+        
+        if (failureResult.locked) {
+          return c.json({
+            success: false,
+            error: `Too many failed attempts. Locked for ${Math.ceil((failureResult.retryAfter || 0) / 60)} minutes.`,
+            locked: true,
+            retryAfter: failureResult.retryAfter
+          }, 429);
+        }
+        
+        return c.json({
+          success: false,
+          error: 'Incorrect PIN. Try again! 🌙',
+          attemptsRemaining: failureResult.attemptsRemaining
+        }, 401);
+      }
+      
+      // PIN correct - create kid session
+      const { token, expiresAt } = await createKidSession(child.id, false);
+      
+      // Reset failure tracking
+      await resetPinFailures(child.id, deviceHash);
+      
+      // Return kid access token and info
+      const { pin: _, ...childWithoutPin } = child;
+      
+      return c.json({
+        success: true,
+        kidAccessToken: token,
+        kid: {
+          id: child.id,
+          name: child.name,
+          avatar: child.avatar,
+          familyId: familyId
+        },
+        familyCode: familyCode.toUpperCase(),
+        expiresAt,
+        message: `Welcome back, ${child.name}! ✨`
+      });
+      
+    } catch (error) {
+      console.error('Kid login error:', error);
+      return c.json({ 
+        success: false, 
+        error: 'Login failed. Please try again.' 
+      }, 500);
+    }
+  }
+);
+
 // PUBLIC ENDPOINT: Get children for kid login screen (no auth required)
 // This endpoint returns basic child info (id, name, avatar) for display on kid login
 // It deliberately excludes sensitive fields like PINs
 app.get(
   "/make-server-f116e23f/families/:familyId/children/public",
   async (c) => {
-  try {
-    const familyId = c.req.param('familyId');
-    
-    const allChildren = await kv.getByPrefix('child:');
-    const familyChildren = allChildren.filter((child: any) => child.familyId === familyId);
-    
-    const publicChildren = familyChildren.map((child: any) => ({
-      id: child.id,
-      name: child.name,
-      avatar: child.avatar || '👶',
-      familyId: child.familyId
-    }));
-    
-    return c.json(publicChildren);
-  } catch (error) {
-    return c.json({ error: 'Failed to get children' }, 500);
+    try {
+      const familyId = c.req.param('familyId');
+      
+      const allChildren = await kv.getByPrefix('child:');
+      const familyChildren = allChildren.filter((child: any) => child.familyId === familyId);
+      
+      const publicChildren = familyChildren.map((child: any) => ({
+        id: child.id,
+        name: child.name,
+        avatar: child.avatar || '👶',
+        familyId: child.familyId
+      }));
+      
+      return c.json(publicChildren);
+    } catch (error) {
+      return c.json({ error: 'Failed to get children' }, 500);
+    }
   }
-});
+);
 
 // Get children by family
 app.get(
@@ -1024,7 +1476,6 @@ app.post(
 app.get(
   "/make-server-f116e23f/providers",
   requireAuth,
-  requireFamilyAccess,
   async (c) => {
   try {
     const providers = await kv.getByPrefix('provider:');
@@ -2212,6 +2663,100 @@ app.post("/make-server-f116e23f/invites/:code/revoke", async (c) => {
     return c.json({ error: 'Failed to revoke invite' }, 500);
   }
 });
+
+// ===== EDIT REQUESTS =====
+// Get all edit requests for the user's families
+app.get(
+  "/make-server-f116e23f/edit-requests",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const userId = getAuthUserId(c);
+      
+      // Get all families where user is a member
+      const familiesResult = await kv.getByPrefix(`family:`);
+      const userFamilies = familiesResult
+        .filter((f: any) => f.members?.includes(userId))
+        .map((f: any) => f.id);
+      
+      // Get edit requests for all user's families
+      const allRequests: any[] = [];
+      for (const familyId of userFamilies) {
+        const requests = await kv.getByPrefix(`edit_request:${familyId}:`);
+        allRequests.push(...requests);
+      }
+      
+      // Sort by createdAt descending (newest first)
+      allRequests.sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+      
+      return c.json(allRequests);
+    } catch (error) {
+      console.error('❌ Error fetching edit requests:', error);
+      return c.json({ error: 'Failed to fetch edit requests' }, 500);
+    }
+  }
+);
+
+// Resolve an edit request (approve or reject)
+app.post(
+  "/make-server-f116e23f/edit-requests/:requestId/resolve",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const { requestId } = c.req.param();
+      const body = await c.req.json();
+      const { status, resolverId, resolution } = body;
+      
+      if (!['approved', 'rejected'].includes(status)) {
+        return c.json({ error: 'Invalid status. Must be approved or rejected' }, 400);
+      }
+      
+      // Get the edit request
+      const request = await kv.get(requestId);
+      if (!request) {
+        return c.json({ error: 'Edit request not found' }, 404);
+      }
+      
+      // Update the request status
+      const updatedRequest = {
+        ...request,
+        status,
+        resolvedAt: new Date().toISOString(),
+        resolvedBy: resolverId,
+        resolution: resolution || ''
+      };
+      
+      await kv.set(requestId, updatedRequest);
+      
+      // If approved, apply the changes to the original event
+      if (status === 'approved' && request.proposedChanges) {
+        const originalEvent = await kv.get(request.originalEventId);
+        if (originalEvent) {
+          const updatedEvent = {
+            ...originalEvent,
+            ...request.proposedChanges,
+            lastModifiedAt: new Date().toISOString(),
+            lastModifiedBy: resolverId
+          };
+          await kv.set(request.originalEventId, updatedEvent);
+        }
+      }
+      
+      return c.json({ 
+        success: true, 
+        message: status === 'approved' ? 'Edit request approved and changes applied' : 'Edit request rejected',
+        request: updatedRequest 
+      });
+    } catch (error) {
+      console.error('❌ Error resolving edit request:', error);
+      return c.json({ error: 'Failed to resolve edit request' }, 500);
+    }
+  }
+);
 
 // Catch-all route for debugging
 app.all('*', (c) => {

@@ -104,6 +104,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
 
         if (session?.access_token) {
+          // CRITICAL: Validate that token is not the string "null" or other invalid values
+          const token = session.access_token;
+          const isValidToken = token && 
+                               token !== 'null' && 
+                               token !== 'undefined' && 
+                               token.length > 20 &&
+                               token.split('.').length === 3; // JWT has 3 parts
+          
+          if (!isValidToken) {
+            console.error('❌ Invalid token detected in Supabase session:', {
+              token: token?.substring(0, 50),
+              isNullString: token === 'null',
+              length: token?.length,
+              parts: token?.split('.').length
+            });
+            
+            // Force sign out to clear corrupted session
+            console.log('🧹 Signing out to clear corrupted Supabase session');
+            await supabase.auth.signOut();
+            setAccessTokenState(null);
+            setUserId(null);
+            localStorage.clear();
+            setIsLoading(false);
+            return;
+          }
+          
           console.log('Session refreshed successfully:', {
             userId: session.user?.id,
             tokenPreview: session.access_token.substring(0, 20),

@@ -1,3 +1,8 @@
+import { Welcome } from "./pages/Welcome";
+import { ParentLogin } from "./pages/ParentLogin";
+import { ParentSignup } from "./pages/ParentSignup";
+import { KidLoginNew } from "./pages/KidLoginNew";
+import { TitlesBadgesPage } from "./pages/TitlesBadgesPage";
 import { createBrowserRouter, Navigate } from "react-router";
 import { RootLayout } from "./layouts/RootLayout";
 import { ProvidersLayout } from "./layouts/ProvidersLayout";
@@ -14,18 +19,15 @@ import { Quizzes } from "./pages/Quizzes";
 import { QuizPlay } from "./pages/QuizPlay";
 import { QuizStats } from "./pages/QuizStats";
 import { Challenges } from "./pages/Challenges";
-import { Welcome } from "./pages/Welcome";
-import { ParentLogin } from "./pages/ParentLogin";
-import { ParentSignup } from "./pages/ParentSignup";
-import { KidLogin } from "./pages/KidLogin";
-import { TitlesBadgesPage } from "./pages/TitlesBadgesPage";
 import { SadqaPage } from "./pages/SadqaPage";
 import { Onboarding } from "./pages/Onboarding";
+import { JoinPending } from "./pages/JoinPending";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { DebugAuth } from "./pages/DebugAuth";
 import { JWTDebugTest } from "./pages/JWTDebugTest";
 import { DebugStorage } from "./pages/DebugStorage";
+import { SystemDiagnostics } from "./pages/SystemDiagnostics";
 import { useState, useEffect } from "react";
 import { supabase } from "../../utils/supabase/client";
 import { projectId, publicAnonKey } from "../../utils/supabase/info";
@@ -103,13 +105,27 @@ export const router = createBrowserRouter([
     path: "/signup",
     element: <ParentSignup />,
   },
+  // Legacy kid login - redirect to new implementation
   {
     path: "/kid-login",
-    element: <KidLogin />,
+    element: <Navigate to="/kid-login-new" replace />,
+  },
+  {
+    path: "/kid-login-new",
+    element: <KidLoginNew />,
+  },
+  // Alias for kid login (used in some links)
+  {
+    path: "/kid/login",
+    element: <KidLoginNew />,
   },
   {
     path: "/onboarding",
     element: <ProtectedRoute><Onboarding /></ProtectedRoute>,
+  },
+  {
+    path: "/join-pending",
+    element: <ProtectedRoute><JoinPending /></ProtectedRoute>,
   },
   // Protected routes - require auth AND family
   // Wrapped with ProvidersLayout to ensure FamilyContext and ViewModeContext are available
@@ -157,5 +173,9 @@ export const router = createBrowserRouter([
   {
     path: "/debug-storage",
     element: <DebugStorage />,
+  },
+  {
+    path: "/system-diagnostics",
+    element: <SystemDiagnostics />,
   },
 ]);

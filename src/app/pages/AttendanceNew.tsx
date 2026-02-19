@@ -18,6 +18,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Calendar, Plus, Download, CheckCircle, XCircle, Edit, Trash2, Clock, MapPin, DollarSign, Check, X, FileDown, FileText, Sparkles, Pencil, Lock, CalendarDays } from 'lucide-react';
 import { downloadMonthlyStatement, generateActivityStatement } from "../utils/attendancePdfExport";
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { AlertTriangle } from 'lucide-react';
 
 // Attendance tracking for extracurricular activities
 interface Provider {
@@ -79,6 +81,51 @@ export function AttendanceNew() {
       loadAttendance();
     }
   }, [child, accessToken]); // Re-run when accessToken changes
+
+  // Detect duplicate providers by name
+  const duplicateProviders = providers.reduce((acc, provider, index, arr) => {
+    const duplicates = arr.filter(p => p.name.toLowerCase().trim() === provider.name.toLowerCase().trim());
+    if (duplicates.length > 1 && !acc.some(d => d.name.toLowerCase().trim() === provider.name.toLowerCase().trim())) {
+      acc.push({ name: provider.name, count: duplicates.length, ids: duplicates.map(d => d.id) });
+    }
+    return acc;
+  }, [] as Array<{ name: string; count: number; ids: string[] }>);
+
+  const handleBulkDeleteDuplicates = async () => {
+    if (!accessToken) {
+      toast.error('Authentication required');
+      return;
+    }
+
+    try {
+      let deletedCount = 0;
+      
+      // For each duplicate group, keep the first one and delete the rest
+      for (const dup of duplicateProviders) {
+        const idsToDelete = dup.ids.slice(1); // Keep first, delete rest
+        
+        for (const id of idsToDelete) {
+          const response = await fetch(
+            `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/providers/${id}`,
+            {
+              method: 'DELETE',
+              headers: { 'Authorization': `Bearer ${accessToken}` }
+            }
+          );
+          
+          if (response.ok) {
+            deletedCount++;
+          }
+        }
+      }
+      
+      toast.success(`Removed ${deletedCount} duplicate activit${deletedCount === 1 ? 'y' : 'ies'}!`);
+      loadProviders();
+    } catch (error) {
+      console.error('Bulk delete error:', error);
+      toast.error('Failed to remove duplicates');
+    }
+  };
 
   const loadProviders = async () => {
     if (!accessToken) {
@@ -620,6 +667,62 @@ export function AttendanceNew() {
           </DialogContent>
         </Dialog>
       </div>
+
+      {/* Duplicate Activities Warning */}
+      {duplicateProviders.length > 0 && (
+        <Alert variant="destructive" className="border-orange-500 bg-orange-50 text-orange-900">
+          <AlertTriangle className="h-4 w-4 text-orange-600" />
+          <AlertTitle className="text-orange-900">Duplicate Activities Detected</AlertTitle>
+          <AlertDescription className="text-orange-800">
+            <p className="mb-2">You have duplicate activities with the same name. This may cause confusion in tracking and billing:</p>
+            <ul className="list-disc list-inside space-y-1 mb-3">
+              {duplicateProviders.map(dup => (
+                <li key={dup.name}>
+                  <strong>{dup.name}</strong> appears {dup.count} times
+                </li>
+              ))}
+            </ul>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2 bg-white border-orange-300 text-orange-900 hover:bg-orange-100"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Clean Up Duplicates
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Remove All Duplicates?</AlertDialogTitle>
+                  <AlertDialogDescription asChild>
+                    <div>
+                      This will keep one copy of each activity and delete all duplicates. This action cannot be undone.
+                      <div className="mt-3 p-3 bg-gray-50 rounded-md">
+                        <p className="font-semibold text-sm mb-1">Will be removed:</p>
+                        <ul className="text-sm space-y-1">
+                          {duplicateProviders.map(dup => (
+                            <li key={dup.name}>
+                              • {dup.count - 1} duplicate{dup.count - 1 > 1 ? 's' : ''} of <strong>{dup.name}</strong>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleBulkDeleteDuplicates} className="bg-orange-600 hover:bg-orange-700">
+                    Remove Duplicates
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Weekly Schedule */}
       {renderWeeklySchedule()}
