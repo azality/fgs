@@ -77,6 +77,7 @@ export function setKidMode(
 ): void {
   console.log('🔐 Setting kid mode for:', kid.name);
   
+  // New storage keys
   localStorage.setItem(STORAGE_KEYS.USER_MODE, 'kid');
   localStorage.setItem(STORAGE_KEYS.KID_ACCESS_TOKEN, kidAccessToken);
   localStorage.setItem(STORAGE_KEYS.KID_ID, kid.id);
@@ -84,6 +85,20 @@ export function setKidMode(
   localStorage.setItem(STORAGE_KEYS.KID_AVATAR, kid.avatar);
   localStorage.setItem(STORAGE_KEYS.KID_FAMILY_CODE, familyCode);
   localStorage.setItem(STORAGE_KEYS.FAMILY_ID, kid.familyId);
+  
+  // Backwards compatibility - also set old keys used by AuthContext
+  localStorage.setItem('user_role', 'child');
+  localStorage.setItem('kid_session_token', kidAccessToken);
+  localStorage.setItem('child_id', kid.id);
+  localStorage.setItem('fgs_user_id', kid.id);
+  localStorage.setItem('fgs_user_mode', 'kid');
+  
+  // CRITICAL: Dispatch custom event to trigger AuthContext refresh
+  // This ensures AuthContext picks up the new kid session immediately
+  console.log('📢 Dispatching auth-changed event to trigger AuthContext refresh');
+  window.dispatchEvent(new CustomEvent('auth-changed', { 
+    detail: { type: 'kid-login', kidId: kid.id } 
+  }));
 }
 
 /**
@@ -124,6 +139,7 @@ export function getKidInfo(): {
 export function logoutKid(): void {
   console.log('🔐 Logging out kid');
   
+  // Clear new keys
   localStorage.removeItem(STORAGE_KEYS.USER_MODE);
   localStorage.removeItem(STORAGE_KEYS.KID_ACCESS_TOKEN);
   localStorage.removeItem(STORAGE_KEYS.KID_ID);
@@ -131,7 +147,13 @@ export function logoutKid(): void {
   localStorage.removeItem(STORAGE_KEYS.KID_AVATAR);
   localStorage.removeItem(STORAGE_KEYS.KID_FAMILY_CODE);
   
-  // Keep FAMILY_ID for future logins
+  // Clear old keys (backwards compatibility)
+  localStorage.removeItem('user_role');
+  localStorage.removeItem('kid_session_token');
+  localStorage.removeItem('child_id');
+  localStorage.removeItem('fgs_user_mode');
+  
+  // Keep FAMILY_ID and fgs_user_id for future logins
 }
 
 // ===== SHARED UTILITIES =====

@@ -6,7 +6,21 @@ import { useAuth } from '../contexts/AuthContext';
 export function useTrackableItems() {
   const [items, setItems] = useState<TrackableItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const { accessToken } = useAuth();
+  const { accessToken: authToken } = useAuth();
+  
+  // CRITICAL: Support kid mode tokens from localStorage
+  const accessToken = (() => {
+    if (authToken) return authToken;
+    
+    const userRole = localStorage.getItem('user_role');
+    const userMode = localStorage.getItem('user_mode');
+    
+    if (userRole === 'child' || userMode === 'kid') {
+      return localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
+    }
+    
+    return null;
+  })();
 
   const loadItems = async () => {
     // Don't try to load data if we don't have an access token

@@ -67,10 +67,23 @@ export function KidLoginNew() {
     setStep('pin');
   };
 
-  const handlePinSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (pin.length !== 4) {
+  const handlePinInput = (digit: string) => {
+    if (pin.length < 4) {
+      const newPin = pin + digit;
+      setPin(newPin);
+      
+      // Auto-submit when 4 digits entered
+      if (newPin.length === 4) {
+        setTimeout(() => {
+          // Call verification directly with the new pin value
+          verifyPin(newPin);
+        }, 300);
+      }
+    }
+  };
+
+  const verifyPin = async (pinValue: string) => {
+    if (pinValue.length !== 4) {
       toast.error('PIN must be 4 digits');
       return;
     }
@@ -88,22 +101,50 @@ export function KidLoginNew() {
         body: JSON.stringify({
           familyCode: familyCode.trim().toUpperCase(),
           childId: selectedKid.id,
-          pin: pin
+          pin: pinValue
         })
       });
 
       if (response.success) {
         // Store kid session
+        console.log('✅ Kid login successful, storing session:', {
+          kidId: response.kid.id,
+          kidName: response.kid.name,
+          hasToken: !!response.kidAccessToken,
+          tokenLength: response.kidAccessToken?.length
+        });
+        
         setKidMode(
           response.kidAccessToken,
           response.kid,
           response.familyCode
         );
+        
+        console.log('✅ Kid session stored, checking localStorage:', {
+          user_role: localStorage.getItem('user_role'),
+          kid_session_token: !!localStorage.getItem('kid_session_token'),
+          child_id: localStorage.getItem('child_id'),
+          user_mode: localStorage.getItem('user_mode')
+        });
 
         toast.success(response.message || `Welcome back, ${response.kid.name}! 🌟`);
         
-        // Navigate to kid dashboard
-        navigate('/kid/home');
+        console.log('🚀 Navigating to /kid/home...');
+        
+        // Small delay to ensure localStorage is fully written
+        setTimeout(() => {
+          console.log('🚀 Executing navigate() now...');
+          console.log('🔍 Final localStorage check before navigate:', {
+            user_mode: localStorage.getItem('user_mode'),
+            kid_access_token: !!localStorage.getItem('kid_access_token'),
+            user_role: localStorage.getItem('user_role')
+          });
+          
+          // Navigate to kid dashboard
+          navigate('/kid/home');
+          
+          console.log('✅ navigate() called, should be routing now');
+        }, 100);
       } else {
         toast.error(response.error || 'Login failed');
         setPin('');
@@ -123,18 +164,9 @@ export function KidLoginNew() {
     }
   };
 
-  const handlePinInput = (digit: string) => {
-    if (pin.length < 4) {
-      const newPin = pin + digit;
-      setPin(newPin);
-      
-      // Auto-submit when 4 digits entered
-      if (newPin.length === 4) {
-        setTimeout(() => {
-          handlePinSubmit(new Event('submit') as any);
-        }, 300);
-      }
-    }
+  const handlePinSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await verifyPin(pin);
   };
 
   const handlePinDelete = () => {

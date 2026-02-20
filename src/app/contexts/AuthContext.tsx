@@ -171,6 +171,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     
     // Check if we should be on login page
     const checkSessionAndRedirect = async () => {
+      // CRITICAL: Check if user is in kid mode FIRST
+      const userRole = localStorage.getItem('user_role');
+      
+      if (userRole === 'child') {
+        console.log('👶 Kid mode detected in checkSessionAndRedirect - skipping Supabase session check');
+        // Skip Supabase checks for kid mode - just refresh kid session
+        await refreshSession();
+        return;
+      }
+      
+      // Parent mode: Check Supabase session
       const { data: { session }, error } = await supabase.auth.getSession();
       
       // If no session and we have user_id in localStorage, it means session expired
@@ -218,8 +229,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     );
 
+    // CRITICAL: Listen for custom auth-changed event from kid login
+    const handleAuthChanged = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      console.log('📢 Received auth-changed event:', customEvent.detail);
+      // Immediately refresh session to pick up new kid token
+      refreshSession();
+    };
+    
+    window.addEventListener('auth-changed', handleAuthChanged);
+
     return () => {
       subscription.unsubscribe();
+      window.removeEventListener('auth-changed', handleAuthChanged);
     };
   }, []);
 

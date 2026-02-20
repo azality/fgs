@@ -461,6 +461,30 @@ export function validateWishlistItem(data: any): ValidationResult {
 }
 
 /**
+ * Validate redemption request data
+ */
+export function validateRedemptionRequest(data: any): ValidationResult {
+  const errors: string[] = [];
+
+  if (!data.childId) {
+    errors.push("childId is required");
+  }
+
+  if (!data.rewardId) {
+    errors.push("rewardId is required");
+  }
+
+  if (data.notes && data.notes.length > 500) {
+    errors.push("notes must be 500 characters or less");
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
  * Validate quiz data
  */
 export function validateQuiz(data: any): ValidationResult {

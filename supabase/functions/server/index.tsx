@@ -30,6 +30,7 @@ import {
   validateMilestone,
   validateReward,
   validateWishlistItem,
+  validateRedemptionRequest,
   validateQuiz,
   validateQuizAttempt,
   getValidatedBody
@@ -1949,7 +1950,7 @@ app.post(
 app.get(
   "/make-server-f116e23f/trackable-items",
   requireAuth,
-  requireParent,
+  // Kids can READ trackable items (but not create/delete them)
   async (c) => {
   try {
     const items = await kv.getByPrefix('item:');
@@ -2057,7 +2058,7 @@ app.post(
 app.get(
   "/make-server-f116e23f/milestones",
   requireAuth,
-  requireParent,
+  // Kids can READ milestones (but not create/delete them)
   async (c) => {
   try {
     const milestones = await kv.getByPrefix('milestone:');
@@ -2114,7 +2115,7 @@ app.post(
 app.get(
   "/make-server-f116e23f/rewards",
   requireAuth,
-  requireParent,
+  // Kids can READ rewards (but not create/delete them)
   async (c) => {
   try {
     const rewards = await kv.getByPrefix('reward:');
@@ -2796,5 +2797,404 @@ app.post(
 app.all('*', (c) => {
   return c.json({ error: 'Route not found', path: c.req.path }, 404);
 });
+
+// ===== WISHLIST ITEMS =====
+
+// Create wishlist item (Kid or Parent can create)
+app.post(
+  "/make-server-f116e23f/wishlist-items",
+  requireAuth,
+  validate(validateWishlistItem),
+  async (c) => {
+    try {
+      const data = getValidatedBody(c);
+      const userId = getAuthUserId(c);
+      
+      // Verify child exists and belongs to user's family
+      const child = await kv.get(data.childId);
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+      
+      // Create wishlist item
+      const id = `wishlist:${crypto.randomUUID()}`;
+      const wishlistItem = {
+        id,
+        childId: data.childId,
+        familyId: child.familyId,
+        itemName: data.itemName || data.wishText?.substring(0, 50),
+        description: data.wishText,
+        audioUrl: data.audioUrl,
+        submittedBy: userId,
+        submittedAt: new Date().toISOString(),
+        status: 'pending', // pending | converted | rejected
+        convertedToRewardId: null
+      };
+      
+      await kv.set(id, wishlistItem);
+      
+      return c.json({ success: true, wishlistItem });
+    } catch (error) {
+      console.error('Failed to create wishlist item:', error);
+      return c.json({ error: 'Failed to create wishlist item' }, 500);
+    }
+  }
+);
+
+// Get wishlist items for a family
+app.get(
+  "/make-server-f116e23f/families/:familyId/wishlist-items",
+  requireAuth,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const { familyId } = c.req.param();
+      
+      // Get all wishlist items
+      const items = await kv.getByPrefix('wishlist:');
+      const familyItems = items.filter((item: any) => item.familyId === familyId);
+      
+      // Sort by submission date (newest first)
+      familyItems.sort((a: any, b: any) => 
+        new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+      );
+      
+      return c.json(familyItems);
+    } catch (error) {
+      console.error('Failed to get wishlist items:', error);
+      return c.json({ error: 'Failed to get wishlist items' }, 500);
+    }
+  }
+);
+
+// Convert wishlist item to reward (Parent only)
+app.post(
+  "/make-server-f116e23f/wishlist-items/:id/convert",
+  requireAuth,
+  requireParent,
+  validate(validateReward),
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const rewardData = getValidatedBody(c);
+      const userId = getAuthUserId(c);
+      
+      // Get wishlist item
+      const wishlistItem = await kv.get(id);
+      if (!wishlistItem) {
+        return c.json({ error: 'Wishlist item not found' }, 404);
+      }
+      
+      // Verify access to family
+      const child = await kv.get(wishlistItem.childId);
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+      
+      // Create reward
+      const rewardId = `reward:${crypto.randomUUID()}`;
+      const reward = {
+        id: rewardId,
+        ...rewardData,
+        familyId: child.familyId,
+        createdBy: userId,
+        createdAt: new Date().toISOString(),
+        fromWishlistId: id,
+        category: rewardData.category || (
+          rewardData.pointCost < 50 ? 'small' :
+          rewardData.pointCost < 150 ? 'medium' : 'large'
+        )
+      };
+      
+      await kv.set(rewardId, reward);
+      
+      // Update wishlist item status
+      await kv.set(id, {
+        ...wishlistItem,
+        status: 'converted',
+        convertedToRewardId: rewardId,
+        convertedAt: new Date().toISOString(),
+        convertedBy: userId
+      });
+      
+      return c.json({ success: true, reward });
+    } catch (error) {
+      console.error('Failed to convert wishlist item:', error);
+      return c.json({ error: 'Failed to convert wishlist item' }, 500);
+    }
+  }
+);
+
+// Delete wishlist item
+app.delete(
+  "/make-server-f116e23f/wishlist-items/:id",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      await kv.del(id);
+      return c.json({ success: true });
+    } catch (error) {
+      console.error('Failed to delete wishlist item:', error);
+      return c.json({ error: 'Failed to delete wishlist item' }, 500);
+    }
+  }
+);
+
+// ===== REDEMPTION REQUESTS =====
+
+// Create redemption request (Kid or Parent can create)
+app.post(
+  "/make-server-f116e23f/redemption-requests",
+  requireAuth,
+  validate(validateRedemptionRequest),
+  async (c) => {
+    try {
+      const data = getValidatedBody(c);
+      const userId = getAuthUserId(c);
+      
+      // Get child and reward
+      const [child, reward] = await Promise.all([
+        kv.get(data.childId),
+        kv.get(data.rewardId)
+      ]);
+      
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+      
+      if (!reward) {
+        return c.json({ error: 'Reward not found' }, 404);
+      }
+      
+      // Check if child has enough points
+      if (child.currentPoints < reward.pointCost) {
+        return c.json({ 
+          error: 'Not enough points', 
+          details: `Need ${reward.pointCost} points, have ${child.currentPoints}` 
+        }, 400);
+      }
+      
+      // Create redemption request
+      const id = `redemption:${crypto.randomUUID()}`;
+      const redemptionRequest = {
+        id,
+        childId: data.childId,
+        rewardId: data.rewardId,
+        familyId: child.familyId,
+        pointCost: reward.pointCost,
+        rewardName: reward.name,
+        rewardDescription: reward.description,
+        notes: data.notes,
+        requestedBy: userId,
+        requestedAt: new Date().toISOString(),
+        status: 'pending', // pending | approved | declined | delivered
+        approvedBy: null,
+        approvedAt: null,
+        declinedBy: null,
+        declinedAt: null,
+        declineReason: null,
+        deliveredAt: null,
+        deliveredBy: null
+      };
+      
+      await kv.set(id, redemptionRequest);
+      
+      return c.json({ success: true, redemptionRequest });
+    } catch (error) {
+      console.error('Failed to create redemption request:', error);
+      return c.json({ error: 'Failed to create redemption request' }, 500);
+    }
+  }
+);
+
+// Get redemption requests for a family
+app.get(
+  "/make-server-f116e23f/families/:familyId/redemption-requests",
+  requireAuth,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const { familyId } = c.req.param();
+      const status = c.req.query('status'); // Optional filter by status
+      
+      // Get all redemption requests
+      const requests = await kv.getByPrefix('redemption:');
+      let familyRequests = requests.filter((req: any) => req.familyId === familyId);
+      
+      // Filter by status if provided
+      if (status) {
+        familyRequests = familyRequests.filter((req: any) => req.status === status);
+      }
+      
+      // Sort by request date (newest first)
+      familyRequests.sort((a: any, b: any) => 
+        new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime()
+      );
+      
+      return c.json(familyRequests);
+    } catch (error) {
+      console.error('Failed to get redemption requests:', error);
+      return c.json({ error: 'Failed to get redemption requests' }, 500);
+    }
+  }
+);
+
+// Approve redemption request (Parent only)
+app.post(
+  "/make-server-f116e23f/redemption-requests/:id/approve",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const userId = getAuthUserId(c);
+      
+      // Get request
+      const request = await kv.get(id);
+      if (!request) {
+        return c.json({ error: 'Request not found' }, 404);
+      }
+      
+      if (request.status !== 'pending') {
+        return c.json({ error: 'Request is no longer pending' }, 400);
+      }
+      
+      // Get child
+      const child = await kv.get(request.childId);
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+      
+      // Check points again (in case they changed)
+      if (child.currentPoints < request.pointCost) {
+        return c.json({ 
+          error: 'Child no longer has enough points',
+          details: `Need ${request.pointCost} points, have ${child.currentPoints}` 
+        }, 400);
+      }
+      
+      // Deduct points
+      const newPoints = child.currentPoints - request.pointCost;
+      await kv.set(request.childId, {
+        ...child,
+        currentPoints: newPoints
+      });
+      
+      // Log point event
+      const eventId = `event:${crypto.randomUUID()}`;
+      await kv.set(eventId, {
+        id: eventId,
+        childId: request.childId,
+        trackableItemId: 'reward-redemption',
+        points: -request.pointCost,
+        loggedBy: userId,
+        timestamp: new Date().toISOString(),
+        isRedemption: true,
+        redemptionRequestId: id,
+        rewardId: request.rewardId,
+        notes: `Redeemed: ${request.rewardName}`
+      });
+      
+      // Update request status
+      const updatedRequest = {
+        ...request,
+        status: 'approved',
+        approvedBy: userId,
+        approvedAt: new Date().toISOString()
+      };
+      
+      await kv.set(id, updatedRequest);
+      
+      return c.json({ success: true, request: updatedRequest, newPoints });
+    } catch (error) {
+      console.error('Failed to approve redemption request:', error);
+      return c.json({ error: 'Failed to approve redemption request' }, 500);
+    }
+  }
+);
+
+// Decline redemption request (Parent only)
+app.post(
+  "/make-server-f116e23f/redemption-requests/:id/decline",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const { reason } = await c.req.json();
+      const userId = getAuthUserId(c);
+      
+      if (!reason || reason.length < 5) {
+        return c.json({ error: 'Decline reason must be at least 5 characters' }, 400);
+      }
+      
+      // Get request
+      const request = await kv.get(id);
+      if (!request) {
+        return c.json({ error: 'Request not found' }, 404);
+      }
+      
+      if (request.status !== 'pending') {
+        return c.json({ error: 'Request is no longer pending' }, 400);
+      }
+      
+      // Update request status
+      const updatedRequest = {
+        ...request,
+        status: 'declined',
+        declinedBy: userId,
+        declinedAt: new Date().toISOString(),
+        declineReason: reason
+      };
+      
+      await kv.set(id, updatedRequest);
+      
+      return c.json({ success: true, request: updatedRequest });
+    } catch (error) {
+      console.error('Failed to decline redemption request:', error);
+      return c.json({ error: 'Failed to decline redemption request' }, 500);
+    }
+  }
+);
+
+// Mark redemption request as delivered (Parent only)
+app.post(
+  "/make-server-f116e23f/redemption-requests/:id/deliver",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const { id } = c.req.param();
+      const userId = getAuthUserId(c);
+      
+      // Get request
+      const request = await kv.get(id);
+      if (!request) {
+        return c.json({ error: 'Request not found' }, 404);
+      }
+      
+      if (request.status !== 'approved') {
+        return c.json({ error: 'Request must be approved before marking as delivered' }, 400);
+      }
+      
+      // Update request status
+      const updatedRequest = {
+        ...request,
+        status: 'delivered',
+        deliveredBy: userId,
+        deliveredAt: new Date().toISOString()
+      };
+      
+      await kv.set(id, updatedRequest);
+      
+      return c.json({ success: true, request: updatedRequest });
+    } catch (error) {
+      console.error('Failed to mark redemption as delivered:', error);
+      return c.json({ error: 'Failed to mark as delivered' }, 500);
+    }
+  }
+);
 
 Deno.serve(app.fetch);

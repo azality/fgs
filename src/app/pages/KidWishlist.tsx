@@ -1,301 +1,261 @@
-import { useState, useRef } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
-import { Button } from "../components/ui/button";
-import { Textarea } from "../components/ui/textarea";
-import { Badge } from "../components/ui/badge";
-import { useFamilyContext } from "../contexts/FamilyContext";
-import { createWishlistItem, getWishlists } from "../../utils/api";
-import { toast } from "sonner";
-import { Mic, MicOff, Send, Sparkles, Gift, MessageSquare } from "lucide-react";
+import { useState, useEffect } from 'react';
+import { useFamilyContext } from '../contexts/FamilyContext';
+import { useAuth } from '../contexts/AuthContext';
+import { projectId, publicAnonKey } from '../../../utils/supabase/info';
+import { Button } from '../components/ui/button';
+import { Textarea } from '../components/ui/textarea';
+import { Input } from '../components/ui/input';
+import { toast } from 'sonner';
+import { Sparkles, Send, Gift, Clock, CheckCircle2, XCircle } from 'lucide-react';
+import { motion } from 'motion/react';
+import { getKidInfo } from '../utils/auth';
+
+const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f`;
+
+interface WishlistItem {
+  id: string;
+  childId: string;
+  familyId: string;
+  itemName: string;
+  description: string;
+  audioUrl?: string;
+  submittedAt: string;
+  status: 'pending' | 'converted' | 'rejected';
+  convertedToRewardId?: string;
+}
 
 export function KidWishlist() {
-  const { getCurrentChild } = useFamilyContext();
+  const { getCurrentChild, familyId } = useFamilyContext();
+  const { accessToken } = useAuth();
   const child = getCurrentChild();
-
-  const [wishText, setWishText] = useState("");
-  const [isRecording, setIsRecording] = useState(false);
-  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
-  const [recordingTime, setRecordingTime] = useState(0);
-  const [submitting, setSubmitting] = useState(false);
+  const kidInfo = getKidInfo();
   
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordingTimerRef = useRef<number | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  const [wishText, setWishText] = useState('');
+  const [wishlistItems, setWishlistItems] = useState<WishlistItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
-  if (!child) {
-    return (
-      <div className="flex items-center justify-center h-96">
-        <p className="text-muted-foreground">Please select a child profile.</p>
-      </div>
-    );
-  }
+  // Load wishlist items
+  useEffect(() => {
+    if (familyId && accessToken) {
+      loadWishlistItems();
+    }
+  }, [familyId, accessToken]);
 
-  const startRecording = async () => {
+  const loadWishlistItems = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
+      setLoading(true);
+      const response = await fetch(
+        `${API_BASE}/families/${familyId}/wishlist-items`,
+        {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
         }
-      };
+      );
 
-      mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        setAudioBlob(audioBlob);
-        stream.getTracks().forEach(track => track.stop());
-      };
-
-      mediaRecorder.start();
-      setIsRecording(true);
-      setRecordingTime(0);
-
-      // Start timer
-      recordingTimerRef.current = window.setInterval(() => {
-        setRecordingTime(prev => {
-          if (prev >= 60) {
-            // Auto-stop after 60 seconds
-            stopRecording();
-            return prev;
-          }
-          return prev + 1;
-        });
-      }, 1000);
-
-      toast.success("Recording started! 🎤");
-    } catch (error) {
-      console.error('Error accessing microphone:', error);
-      toast.error("Could not access microphone. Please check permissions.");
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      
-      if (recordingTimerRef.current) {
-        clearInterval(recordingTimerRef.current);
-        recordingTimerRef.current = null;
+      if (response.ok) {
+        const items = await response.json();
+        // Filter to show only current child's items if in kid mode
+        const childId = kidInfo?.id || child?.id;
+        const myItems = childId 
+          ? items.filter((item: WishlistItem) => item.childId === childId)
+          : items;
+        setWishlistItems(myItems);
       }
-
-      toast.success("Recording stopped! ✅");
+    } catch (error) {
+      console.error('Failed to load wishlist:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const clearRecording = () => {
-    setAudioBlob(null);
-    setRecordingTime(0);
-    audioChunksRef.current = [];
-    toast.info("Recording cleared");
-  };
-
-  const handleSubmit = async () => {
-    if (!wishText && !audioBlob) {
-      toast.error("Please write your wish or record an audio message!");
+  const handleSubmitWish = async () => {
+    if (!wishText.trim()) {
+      toast.error('Please write your wish!');
       return;
     }
 
-    setSubmitting(true);
+    if (!child?.id) {
+      toast.error('No child selected');
+      return;
+    }
 
     try {
-      // For now, we'll store audio as a placeholder
-      // In production, you would upload to Supabase Storage
-      const wishlistData: any = {
-        childId: child.id,
-        wishText: wishText.trim() || undefined,
-        audioUrl: audioBlob ? `audio-wish-${Date.now()}.webm` : undefined,
-      };
-
-      await createWishlistItem(wishlistData);
-
-      toast.success("Your wish has been sent to your parents! 🌟", {
-        description: "They will review it soon!"
+      setSubmitting(true);
+      const response = await fetch(`${API_BASE}/wishlist-items`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          childId: child.id,
+          wishText: wishText.trim(),
+          itemName: wishText.trim().substring(0, 50)
+        })
       });
 
-      // Reset form
-      setWishText("");
-      setAudioBlob(null);
-      setRecordingTime(0);
+      if (response.ok) {
+        toast.success('Your wish has been sent to your parents! ✨');
+        setWishText('');
+        loadWishlistItems();
+      } else {
+        const error = await response.json();
+        toast.error(error.error || 'Failed to submit wish');
+      }
     } catch (error) {
-      console.error('Error submitting wishlist:', error);
-      toast.error("Failed to send wish. Please try again!");
+      console.error('Failed to submit wish:', error);
+      toast.error('Failed to submit wish');
     } finally {
       setSubmitting(false);
     }
   };
 
-  return (
-    <div className="max-w-2xl mx-auto space-y-6 p-4">
-      {/* Header */}
-      <div className="text-center space-y-2">
-        <div className="flex items-center justify-center gap-2">
-          <Sparkles className="h-8 w-8 text-yellow-500" />
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
-            My Wish List
-          </h1>
-          <Gift className="h-8 w-8 text-purple-500" />
-        </div>
-        <p className="text-muted-foreground">
-          Tell your parents what rewards you'd like to earn! ✨
-        </p>
-      </div>
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'pending':
+        return (
+          <div className="flex items-center gap-1 text-amber-600 bg-amber-50 px-2 py-1 rounded-full text-sm">
+            <Clock className="w-3 h-3" />
+            <span>Waiting...</span>
+          </div>
+        );
+      case 'converted':
+        return (
+          <div className="flex items-center gap-1 text-green-600 bg-green-50 px-2 py-1 rounded-full text-sm">
+            <CheckCircle2 className="w-3 h-3" />
+            <span>Added to rewards!</span>
+          </div>
+        );
+      case 'rejected':
+        return (
+          <div className="flex items-center gap-1 text-gray-600 bg-gray-50 px-2 py-1 rounded-full text-sm">
+            <XCircle className="w-3 h-3" />
+            <span>Not this time</span>
+          </div>
+        );
+    }
+  };
 
-      {/* Main Card */}
-      <Card className="border-2 border-purple-200 bg-gradient-to-br from-purple-50/50 to-pink-50/50">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <MessageSquare className="h-5 w-5 text-purple-600" />
-            Share Your Wish
-          </CardTitle>
-          <CardDescription>
-            Write your wish or record an audio message (great if you can't spell yet!)
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Text Input */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium flex items-center gap-2">
-              ✏️ Write Your Wish
-            </label>
-            <Textarea
-              placeholder="I wish for a new bike! 🚲"
-              value={wishText}
-              onChange={(e) => setWishText(e.target.value)}
-              rows={4}
-              className="text-lg resize-none border-2 focus:border-purple-400"
-              maxLength={500}
-            />
-            <p className="text-xs text-muted-foreground text-right">
-              {wishText.length}/500 characters
+  if (!child) {
+    return (
+      <div className="flex items-center justify-center h-96 bg-gradient-to-br from-[var(--kid-midnight-blue)] to-[#2C3E50] rounded-[1.5rem] text-white">
+        <p>Please select a child to view wishlist! 🌙</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 pb-20">
+      {/* Header */}
+      <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-[1.5rem] p-6 border border-purple-100">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-12 h-12 bg-gradient-to-br from-purple-400 to-pink-400 rounded-full flex items-center justify-center">
+            <Sparkles className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-[var(--kid-midnight-blue)]">
+              My Wishlist ✨
+            </h1>
+            <p className="text-gray-600 text-sm">
+              Tell your parents what rewards you'd like!
             </p>
           </div>
+        </div>
+      </div>
 
-          {/* OR Divider */}
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-300"></div>
-            </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-4 bg-white text-muted-foreground font-medium">
-                OR
-              </span>
-            </div>
+      {/* Submit New Wish */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-white rounded-[1.5rem] p-6 border-2 border-purple-100 shadow-sm"
+      >
+        <div className="flex items-center gap-2 mb-4">
+          <Gift className="w-5 h-5 text-purple-500" />
+          <h2 className="text-lg font-semibold text-gray-800">
+            Make a Wish
+          </h2>
+        </div>
+        
+        <Textarea
+          value={wishText}
+          onChange={(e) => setWishText(e.target.value)}
+          placeholder="I wish for... (like: 'A trip to the ice cream shop' or 'Extra playtime on Saturday')"
+          className="mb-4 min-h-[120px] text-base border-2 border-purple-100 focus:border-purple-300 rounded-xl"
+          maxLength={500}
+        />
+        
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-500">
+            {wishText.length}/500 characters
+          </span>
+          <Button
+            onClick={handleSubmitWish}
+            disabled={submitting || !wishText.trim()}
+            className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white"
+          >
+            {submitting ? (
+              'Sending...'
+            ) : (
+              <>
+                <Send className="w-4 h-4 mr-2" />
+                Send to Parents
+              </>
+            )}
+          </Button>
+        </div>
+      </motion.div>
+
+      {/* Previous Wishes */}
+      <div>
+        <h2 className="text-lg font-semibold text-gray-800 mb-4 px-2">
+          My Previous Wishes
+        </h2>
+        
+        {loading ? (
+          <div className="flex justify-center items-center py-12">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
           </div>
-
-          {/* Audio Recording */}
+        ) : wishlistItems.length === 0 ? (
+          <div className="bg-gray-50 rounded-[1.5rem] p-8 text-center">
+            <Sparkles className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+            <p className="text-gray-500">
+              You haven't made any wishes yet!
+            </p>
+            <p className="text-sm text-gray-400 mt-1">
+              Write your first wish above ☝️
+            </p>
+          </div>
+        ) : (
           <div className="space-y-3">
-            <label className="text-sm font-medium flex items-center gap-2">
-              🎤 Record Your Wish (Audio)
-            </label>
-            
-            <div className="flex flex-col items-center gap-3 p-6 border-2 border-dashed border-purple-300 rounded-lg bg-purple-50/30">
-              {!audioBlob ? (
-                <>
-                  {!isRecording ? (
-                    <Button
-                      onClick={startRecording}
-                      size="lg"
-                      className="bg-purple-600 hover:bg-purple-700 text-white gap-2"
-                    >
-                      <Mic className="h-5 w-5" />
-                      Start Recording
-                    </Button>
-                  ) : (
-                    <>
-                      <div className="flex items-center gap-3">
-                        <div className="animate-pulse h-4 w-4 rounded-full bg-red-500"></div>
-                        <span className="text-lg font-semibold text-red-600">
-                          Recording... {recordingTime}s
-                        </span>
-                      </div>
-                      <Button
-                        onClick={stopRecording}
-                        size="lg"
-                        variant="destructive"
-                        className="gap-2"
-                      >
-                        <MicOff className="h-5 w-5" />
-                        Stop Recording
-                      </Button>
-                    </>
-                  )}
-                  <p className="text-xs text-muted-foreground text-center">
-                    {isRecording 
-                      ? "Speak clearly and tell your parents what you wish for!"
-                      : "Perfect for kids who are still learning to spell! 📣"
-                    }
+            {wishlistItems.map((item, index) => (
+              <motion.div
+                key={item.id}
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: index * 0.1 }}
+                className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm"
+              >
+                <div className="flex items-start justify-between mb-2">
+                  <h3 className="font-medium text-gray-800 flex-1">
+                    {item.itemName}
+                  </h3>
+                  {getStatusBadge(item.status)}
+                </div>
+                
+                {item.description && item.description !== item.itemName && (
+                  <p className="text-sm text-gray-600 mb-2">
+                    {item.description}
                   </p>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center gap-2 text-green-600 font-semibold">
-                    <Mic className="h-5 w-5" />
-                    Audio recorded ({recordingTime}s)
-                  </div>
-                  <audio 
-                    src={URL.createObjectURL(audioBlob)} 
-                    controls 
-                    className="w-full max-w-md"
-                  />
-                  <Button
-                    onClick={clearRecording}
-                    variant="outline"
-                    size="sm"
-                  >
-                    Clear & Record Again
-                  </Button>
-                </>
-              )}
-            </div>
+                )}
+                
+                <p className="text-xs text-gray-400">
+                  Wished on {new Date(item.submittedAt).toLocaleDateString()}
+                </p>
+              </motion.div>
+            ))}
           </div>
-
-          {/* Submit Button */}
-          <div className="pt-4">
-            <Button
-              onClick={handleSubmit}
-              disabled={submitting || (!wishText && !audioBlob)}
-              size="lg"
-              className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white gap-2"
-            >
-              <Send className="h-5 w-5" />
-              {submitting ? "Sending..." : "Send My Wish to Parents! 🌟"}
-            </Button>
-          </div>
-
-          {/* Helpful Tips */}
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-2">
-            <p className="text-sm font-semibold text-blue-900">💡 Tips:</p>
-            <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
-              <li>Be specific about what you want</li>
-              <li>If you can't spell, use the voice recorder!</li>
-              <li>Your parents will see your wish and decide if they can add it</li>
-              <li>Keep earning points to get your wish! ⭐</li>
-            </ul>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Encouragement Card */}
-      <Card className="border-2 border-yellow-200 bg-gradient-to-br from-yellow-50 to-orange-50">
-        <CardContent className="pt-6 text-center space-y-3">
-          <div className="text-4xl">🌟</div>
-          <h3 className="font-semibold text-lg">Keep Earning Points!</h3>
-          <p className="text-sm text-muted-foreground">
-            The more points you earn through good behavior and habits,
-            the sooner you can get your wish! Your parents will work with
-            you to make it happen. ✨
-          </p>
-          <div className="flex items-center justify-center gap-2 pt-2">
-            <Badge variant="secondary" className="bg-yellow-100 text-yellow-800">
-              Current Points: {child.currentPoints || 0}
-            </Badge>
-          </div>
-        </CardContent>
-      </Card>
+        )}
+      </div>
     </div>
   );
 }

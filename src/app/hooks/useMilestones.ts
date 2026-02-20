@@ -12,7 +12,21 @@ export function useMilestones() {
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { accessToken } = useAuth();
+  const { accessToken: authToken } = useAuth();
+  
+  // CRITICAL: Support kid mode tokens from localStorage
+  const accessToken = (() => {
+    if (authToken) return authToken;
+    
+    const userRole = localStorage.getItem('user_role');
+    const userMode = localStorage.getItem('user_mode');
+    
+    if (userRole === 'child' || userMode === 'kid') {
+      return localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
+    }
+    
+    return null;
+  })();
 
   const loadMilestones = async () => {
     // Don't try to load data if we don't have an access token

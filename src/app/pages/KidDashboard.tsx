@@ -9,21 +9,124 @@ import { AdventureMap } from "../components/kid-mode/AdventureMap";
 import { QuestCard } from "../components/kid-mode/QuestCard";
 import { MosqueBuild } from "../components/kid-mode/MosqueBuild";
 import { GentleCorrection } from "../components/kid-mode/GentleCorrection";
+import { RewardRequestCard } from "../components/kid-mode/RewardRequestCard";
 import { Confetti } from "../components/effects/Confetti";
 import { FloatingActionButton } from "../components/mobile/FloatingActionButton";
 import { useState, useEffect } from "react";
-import { Flame, Award, Heart, UserCog } from "lucide-react";
+import { Flame, Award, Heart, UserCog, Gift, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Button } from "../components/ui/button";
+import { useAuth } from "../contexts/AuthContext";
+import { projectId } from "../../../utils/supabase/info";
+import { toast } from "sonner";
+
+const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f`;
 
 export function KidDashboard() {
-  const { getCurrentChild, pointEvents, submitRecovery } = useFamilyContext();
+  const { getCurrentChild, pointEvents, submitRecovery, familyId } = useFamilyContext();
   const { items: trackableItems } = useTrackableItems();
   const { milestones } = useMilestones();
   const { rewards } = useRewards();
   const { challenges } = useChallenges();
+  const { accessToken } = useAuth();
   const child = getCurrentChild();
   const navigate = useNavigate();
+
+  // DEBUG: Log what we're getting
+  console.log('🎮 KidDashboard render:', {
+    hasChild: !!child,
+    childName: child?.name,
+    childId: child?.id,
+    familyId,
+    hasAccessToken: !!accessToken,
+    trackableItemsCount: trackableItems.length,
+    milestonesCount: milestones.length,
+    rewardsCount: rewards.length,
+    challengesCount: challenges.length,
+    pointEventsCount: pointEvents.length
+  });
+
+  // Track pending redemption requests
+  const [pendingRequests, setPendingRequests] = useState<any[]>([]);
+  const [loadingRequests, setLoadingRequests] = useState(false);
+
+  // Load pending redemption requests
+  useEffect(() => {
+    if (!child || !accessToken || !familyId) return;
+
+    const loadPendingRequests = async () => {
+      try {
+        setLoadingRequests(true);
+        const response = await fetch(
+          `${API_BASE}/families/${familyId}/redemption-requests?status=pending`,
+          {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+          }
+        );
+
+        if (response.ok) {
+          const allRequests = await response.json();
+          // Filter to only show this child's requests
+          const myRequests = allRequests.filter((req: any) => req.childId === child.id);
+          setPendingRequests(myRequests);
+        }
+      } catch (error) {
+        console.error('Failed to load pending requests:', error);
+      } finally {
+        setLoadingRequests(false);
+      }
+    };
+
+    loadPendingRequests();
+    // Refresh every 30 seconds
+    const interval = setInterval(loadPendingRequests, 30000);
+    return () => clearInterval(interval);
+  }, [child, accessToken, familyId]);
+
+  // Handle reward request submission
+  const handleRequestReward = async (rewardId: string, notes?: string) => {
+    if (!child || !accessToken) {
+      toast.error('Please log in first');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/redemption-requests`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          childId: child.id,
+          rewardId,
+          notes
+        })
+      });
+
+      if (response.ok) {
+        toast.success('Request sent to your parents! 🎉');
+        // Reload pending requests
+        const loadResponse = await fetch(
+          `${API_BASE}/families/${familyId}/redemption-requests?status=pending`,
+          {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+          }
+        );
+        if (loadResponse.ok) {
+          const allRequests = await loadResponse.json();
+          const myRequests = allRequests.filter((req: any) => req.childId === child.id);
+          setPendingRequests(myRequests);
+        }
+      } else {
+        const error = await response.json();
+        toast.error(error.error || 'Failed to send request');
+      }
+    } catch (error) {
+      console.error('Failed to submit reward request:', error);
+      toast.error('Failed to send request');
+    }
+  };
 
   if (!child) {
     return (
@@ -304,6 +407,52 @@ export function KidDashboard() {
           </motion.div>
         )}
 
+        {/* Available Rewards to Request */}
+        {rewards.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.45 }}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold text-[var(--kid-midnight-blue)] flex items-center gap-2">
+                <Gift className="w-6 h-6 text-[var(--kid-warm-gold)]" />
+                Ask for Rewards 🎁
+              </h2>
+              <button
+                onClick={() => navigate('/kid/wishlist')}
+                className="text-sm bg-gradient-to-r from-purple-500 to-pink-500 text-white px-4 py-2 rounded-full hover:shadow-lg transition-all flex items-center gap-2"
+              >
+                <Sparkles className="w-4 h-4" />
+                My Wishlist
+              </button>
+            </div>
+            <p className="text-gray-600 mb-4 text-sm">
+              You have enough points to ask for these rewards! Click to send a request to your parents. ✨
+            </p>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {rewards
+                .filter(r => child.currentPoints >= r.pointCost * 0.5) // Show rewards they're at least 50% to affording
+                .slice(0, 6)
+                .map((reward) => {
+                  const isPending = pendingRequests.some(req => req.rewardId === reward.id);
+                  return (
+                    <RewardRequestCard
+                      key={reward.id}
+                      rewardId={reward.id}
+                      rewardName={reward.name}
+                      rewardDescription={reward.description}
+                      pointCost={reward.pointCost}
+                      currentPoints={child.currentPoints}
+                      isPending={isPending}
+                      onRequestSubmit={handleRequestReward}
+                    />
+                  );
+                })}
+            </div>
+          </motion.div>
+        )}
+
         {/* Target Reward - Mosque Build */}
         {targetReward && (
           <motion.div
@@ -355,11 +504,29 @@ export function KidDashboard() {
           </motion.div>
         )}
 
+        {/* Pending Reward Requests */}
+        {pendingRequests.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.7 }}
+          >
+            <h2 className="text-2xl font-bold text-[var(--kid-midnight-blue)] mb-4">
+              Pending Rewards 🎁
+            </h2>
+            <div className="space-y-4">
+              {pendingRequests.map((request) => (
+                <RewardRequestCard key={request.id} {...request} />
+              ))}
+            </div>
+          </motion.div>
+        )}
+
         {/* Encouragement Footer */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.7 }}
+          transition={{ delay: 0.8 }}
           className="text-center py-8"
         >
           <p className="text-lg text-gray-600 italic">

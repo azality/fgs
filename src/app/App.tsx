@@ -16,6 +16,13 @@ import { useState, useEffect } from 'react';
 // Clean up any corrupted Supabase sessions on app start
 async function cleanupCorruptedSessions() {
   try {
+    // CRITICAL: Check if user is in kid mode FIRST - don't clean kid sessions!
+    const userRole = localStorage.getItem('user_role');
+    if (userRole === 'child') {
+      console.log('👶 Kid mode detected in App.tsx - skipping session cleanup to preserve kid session');
+      return false;
+    }
+    
     // Check all localStorage keys related to Supabase
     const keys = Object.keys(localStorage);
     const supabaseKeys = keys.filter(k => k.includes('sb-') || k.includes('supabase'));

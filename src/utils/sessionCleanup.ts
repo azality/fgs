@@ -1,6 +1,13 @@
 // This module MUST be imported before Supabase client to ensure cleanup happens first
 export function checkAndCleanCorruptedSessions() {
   try {
+    // CRITICAL: Check if user is in kid mode FIRST - don't clean kid sessions!
+    const userRole = localStorage.getItem('user_role');
+    if (userRole === 'child') {
+      console.log('👶 Kid mode detected - skipping session cleanup to preserve kid session');
+      return false;
+    }
+    
     // Check all localStorage keys related to Supabase
     const keys = Object.keys(localStorage);
     const supabaseKeys = keys.filter(k => k.includes('sb-') || k.includes('supabase'));

@@ -169,7 +169,7 @@ export function LogBehavior() {
         trackableItemId: selectedItemId,
         type: item.type,
         points: totalPoints, // Use total points (base + bonus)
-        performedBy: user.id,
+        loggedBy: user.id, // Changed from performedBy to loggedBy
         notes: finalNotes || undefined
       });
 
@@ -224,12 +224,12 @@ export function LogBehavior() {
     try {
       await addPointEvent({
         childId: child.id,
-        itemId: null,
-        trackableItemId: null,
+        trackableItemId: 'manual-bonus', // Use a special identifier for manual bonuses instead of null
         type: 'bonus',
         points: standaloneBonusPoints,
-        performedBy: user.id,
-        notes: standaloneBonusReason || undefined
+        loggedBy: user.id,
+        notes: standaloneBonusReason || undefined,
+        isAdjustment: true // Mark as adjustment so backend knows this is a manual entry
       });
 
       toast.success(`Logged bonus for ${child.name} (+${standaloneBonusPoints} points)`);

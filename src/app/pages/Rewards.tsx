@@ -5,14 +5,16 @@ import { useMilestones } from "../hooks/useMilestones";
 import { useRewards } from "../hooks/useRewards";
 import { Badge } from "../components/ui/badge";
 import { Progress } from "../components/ui/progress";
-import { Gift, Lock, Star, Award } from "lucide-react";
+import { Gift, Lock, Star, Award, Sparkles, Bell } from "lucide-react";
 import { toast } from "sonner";
+import { useNavigate } from "react-router";
 
 export function Rewards() {
   const { getCurrentChild, updateChildPoints } = useFamilyContext();
   const { milestones } = useMilestones();
   const { rewards } = useRewards();
   const child = getCurrentChild();
+  const navigate = useNavigate();
 
   if (!child) {
     return (
@@ -74,6 +76,39 @@ export function Rewards() {
 
   return (
     <div className="space-y-6">
+      {/* NEW FEATURES BANNER */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <button
+          onClick={() => navigate('/wishlist')}
+          className="bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200 rounded-xl p-4 text-left hover:border-purple-300 transition-all hover:shadow-md"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-gradient-to-br from-purple-400 to-pink-400 rounded-full flex items-center justify-center">
+              <Sparkles className="w-6 h-6 text-white" />
+            </div>
+            <div className="flex-1">
+              <p className="font-semibold text-gray-900">Kids' Wishlist</p>
+              <p className="text-sm text-gray-600">Review wishes & create rewards</p>
+            </div>
+          </div>
+        </button>
+
+        <button
+          onClick={() => navigate('/redemption-requests')}
+          className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl p-4 text-left hover:border-blue-300 transition-all hover:shadow-md"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-gradient-to-br from-blue-400 to-indigo-400 rounded-full flex items-center justify-center">
+              <Bell className="w-6 h-6 text-white" />
+            </div>
+            <div className="flex-1">
+              <p className="font-semibold text-gray-900">Reward Requests</p>
+              <p className="text-sm text-gray-600">Approve & track deliveries</p>
+            </div>
+          </div>
+        </button>
+      </div>
+
       {/* Current Points & Progress */}
       <Card className="bg-gradient-to-br from-yellow-50 to-orange-50 border-yellow-200">
         <CardHeader>

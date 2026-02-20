@@ -44,7 +44,26 @@ export const FamilyContext = createContext<FamilyContextType | undefined>(undefi
 export function FamilyProvider({ children: reactChildren }: { children: ReactNode }) {
   // Safely access auth context
   const authContext = useContext(AuthContext);
-  const accessToken = authContext?.accessToken || null;
+  
+  // CRITICAL: In kid mode, get token from localStorage instead of AuthContext
+  const accessToken = (() => {
+    const authToken = authContext?.accessToken;
+    if (authToken) return authToken;
+    
+    // Check if we're in kid mode
+    const userRole = localStorage.getItem('user_role');
+    const userMode = localStorage.getItem('user_mode');
+    
+    if (userRole === 'child' || userMode === 'kid') {
+      const kidToken = localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
+      if (kidToken) {
+        console.log('👶 FamilyContext: Using kid token from localStorage');
+        return kidToken;
+      }
+    }
+    
+    return null;
+  })();
 
   console.log('🏗️ FamilyProvider rendering:', { 
     hasAuthContext: !!authContext, 
@@ -65,9 +84,18 @@ export function FamilyProvider({ children: reactChildren }: { children: ReactNod
   };
   
   const [selectedChildId, setSelectedChildIdState] = useState<string | null>(() => {
-    // CRITICAL: Never initialize with a child ID if we're in parent mode
+    // CRITICAL: Check if we're in kid mode first
     const currentRole = getCurrentRole();
     console.log('🔍 Initializing selectedChildId:', { currentRole });
+    
+    if (currentRole === 'child') {
+      // In kid mode, auto-select the logged-in kid
+      const kidId = localStorage.getItem('kid_id') || localStorage.getItem('child_id');
+      if (kidId) {
+        console.log('✅ Kid mode - auto-selected child:', kidId);
+        return kidId;
+      }
+    }
     
     if (currentRole === 'parent') {
       // Clear any stale selection from localStorage
@@ -76,7 +104,7 @@ export function FamilyProvider({ children: reactChildren }: { children: ReactNod
       return null;
     }
     
-    // In child mode, could load from localStorage if needed
+    // In child/unknown mode, could load from localStorage if needed
     console.log('✅ Child/unknown mode - initialized selectedChildId to null');
     return null;
   });

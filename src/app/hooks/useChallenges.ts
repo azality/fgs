@@ -6,8 +6,23 @@ import { projectId } from '/utils/supabase/info';
 
 export function useChallenges() {
   const { getCurrentChild } = useFamilyContext();
-  const { accessToken } = useAuth();
+  const { accessToken: authToken } = useAuth();
   const child = getCurrentChild();
+  
+  // CRITICAL: Support kid mode tokens from localStorage
+  const accessToken = (() => {
+    if (authToken) return authToken;
+    
+    const userRole = localStorage.getItem('user_role');
+    const userMode = localStorage.getItem('user_mode');
+    
+    if (userRole === 'child' || userMode === 'kid') {
+      return localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
+    }
+    
+    return null;
+  })();
+  
   const [challenges, setChallenges] = useState<Challenge[]>([]);
   const [loading, setLoading] = useState(false);
 
