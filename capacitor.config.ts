@@ -1,8 +1,8 @@
 import { CapacitorConfig } from '@capacitor/core';
 
 const config: CapacitorConfig = {
-  appId: 'com.fgs.parent',
-  appName: 'FGS Parent',
+  appId: 'com.fgs.kids',
+  appName: 'FGS Kids',
   webDir: 'dist',
   bundledWebRuntime: false,
   server: {
@@ -11,7 +11,7 @@ const config: CapacitorConfig = {
   plugins: {
     SplashScreen: {
       launchAutoHide: false,
-      backgroundColor: '#8B5CF6', // Purple for parent mode
+      backgroundColor: '#F59E0B', // Warm orange for kids mode
       showSpinner: true,
       spinnerColor: '#ffffff',
       androidSpinnerStyle: 'large',
@@ -20,11 +20,8 @@ const config: CapacitorConfig = {
       splashImmersive: true,
     },
     StatusBar: {
-      style: 'dark',
-      backgroundColor: '#8B5CF6'
-    },
-    PushNotifications: {
-      presentationOptions: ['badge', 'sound', 'alert']
+      style: 'light',
+      backgroundColor: '#F59E0B'
     }
   }
 };

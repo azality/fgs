@@ -6,7 +6,11 @@ import { ViewModeProvider, ModeTransitionOverlay } from './contexts/ViewModeCont
 import { Toaster } from './components/ui/sonner';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { TestStatusIndicator } from './components/TestStatusIndicator';
-import { TestControlPanel } from './components/TestControlPanel';
+import React from "react";
+
+const DevTestControlPanel = import.meta.env.DEV
+  ? React.lazy(() => import("./components/TestControlPanel"))
+  : null;
 
 console.log('🚀 App.tsx loaded');
 
@@ -30,7 +34,11 @@ export default function App() {
             <Toaster />
             <ModeTransitionOverlay />
             {import.meta.env.DEV && <TestStatusIndicator />}
-            <TestControlPanel />
+            {import.meta.env.DEV && DevTestControlPanel ? (
+  <React.Suspense fallback={null}>
+    <DevTestControlPanel />
+  </React.Suspense>
+) : null}
           </ViewModeProvider>
         </FamilyProvider>
       </AuthProvider>
