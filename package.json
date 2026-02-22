@@ -5,9 +5,20 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "build:parent": "VITE_APP_MODE=parent vite build",
+    "build:kids": "VITE_APP_MODE=kids vite build",
+    "cap:init": "npx cap init",
+    "cap:add:ios": "npx cap add ios",
+    "cap:sync": "npx cap sync",
+    "cap:sync:parent": "npm run build:parent && npx cap sync ios",
+    "cap:sync:kids": "npm run build:kids && npx cap sync ios",
+    "cap:open:ios": "npx cap open ios",
+    "cap:copy": "npx cap copy",
+    "cap:update": "npx cap update",
     "dev": "vite"
   },
   "dependencies": {
+    "@capacitor/push-notifications": "^8.0.1",
     "@emotion/react": "11.14.0",
     "@emotion/styled": "11.14.1",
     "@mui/icons-material": "7.3.5",
@@ -44,6 +55,7 @@
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
     "date-fns": "3.6.0",
+    "date-fns-tz": "^3.2.0",
     "embla-carousel-react": "8.6.0",
     "input-otp": "1.4.2",
     "jspdf": "^4.1.0",

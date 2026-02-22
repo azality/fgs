@@ -12,6 +12,19 @@ interface ViewModeContextType {
 
 const ViewModeContext = createContext<ViewModeContextType | undefined>(undefined);
 
+// Define which routes are parent-only (not accessible in kid mode)
+const PARENT_ONLY_ROUTES = [
+  '/log',
+  '/review',
+  '/attendance',
+  '/adjustments',
+  '/edit-requests',
+  '/audit',
+  '/settings',
+  '/wishlist',
+  '/redemption-requests'
+];
+
 export function ViewModeProvider({ children }: { children: ReactNode }) {
   // Initialize viewMode based on user_role in localStorage
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -30,6 +43,16 @@ export function ViewModeProvider({ children }: { children: ReactNode }) {
       localStorage.setItem('fgs_view_mode_preference', 'kid');
       document.documentElement.classList.add('kid-mode');
       document.documentElement.classList.remove('parent-mode');
+      
+      // CRITICAL: Redirect to kid dashboard if currently on a parent-only page
+      const currentPath = window.location.pathname;
+      const isOnParentOnlyRoute = PARENT_ONLY_ROUTES.some(route => currentPath.startsWith(route));
+      
+      if (isOnParentOnlyRoute) {
+        console.log('🔄 Switching to kid mode from parent-only route, redirecting to kid dashboard');
+        window.location.href = '/kid/home';
+      }
+      
       setTimeout(() => setIsTransitioning(false), 600);
     }, 100);
   };

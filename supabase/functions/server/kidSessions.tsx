@@ -63,23 +63,52 @@ export async function createKidSession(
 export async function verifyKidSession(
   token: string
 ): Promise<{ valid: boolean; childId?: string; familyId?: string; error?: string }> {
+  console.log('🔍 verifyKidSession called:', {
+    tokenPreview: token?.substring(0, 20) + '...',
+    startsWithKid: token?.startsWith('kid_')
+  });
+  
   if (!token || !token.startsWith('kid_')) {
+    console.log('❌ Invalid token format');
     return { valid: false, error: "Invalid token format" };
   }
   
-  const session = await kv.get(`kidsession:${token}`);
+  const sessionKey = `kidsession:${token}`;
+  console.log('🔍 Looking up session with key:', sessionKey.substring(0, 35) + '...');
+  
+  const session = await kv.get(sessionKey);
+  
+  console.log('🔍 Session lookup result:', {
+    found: !!session,
+    sessionData: session ? {
+      childId: session.childId,
+      familyId: session.familyId,
+      expiresAt: session.expiresAt,
+      createdAt: session.createdAt
+    } : null
+  });
   
   if (!session) {
+    console.log('❌ Session not found in KV store');
     return { valid: false, error: "Session not found" };
   }
   
   const expiresAt = new Date(session.expiresAt);
-  if (expiresAt < new Date()) {
+  const now = new Date();
+  console.log('🔍 Checking expiration:', {
+    expiresAt: expiresAt.toISOString(),
+    now: now.toISOString(),
+    expired: expiresAt < now
+  });
+  
+  if (expiresAt < now) {
     // Session expired - clean up
-    await kv.del(`kidsession:${token}`);
+    console.log('❌ Session expired, cleaning up');
+    await kv.del(sessionKey);
     return { valid: false, error: "Session expired" };
   }
   
+  console.log('✅ Session valid');
   return {
     valid: true,
     childId: session.childId,

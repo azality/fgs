@@ -41,7 +41,7 @@ export function SadqaPage() {
         <div className="max-w-6xl mx-auto">
           {/* Back Button */}
           <button
-            onClick={() => navigate("/kid-dashboard")}
+            onClick={() => navigate("/kid/home")}
             className="flex items-center gap-2 text-white/80 hover:text-white mb-4 transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />

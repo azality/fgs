@@ -68,24 +68,18 @@ async function apiCall(endpoint: string, options: RequestInit = {}, retryCount =
   let accessToken: string | null = null;
   let tokenSource: string = 'none';
   
-  // CRITICAL: Check if user is in kid mode first
-  const userRole = localStorage.getItem('user_role');
-  const userMode = localStorage.getItem('user_mode');
+  // CRITICAL: Check if this is an actual kid login (has kid token)
+  const kidToken = localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
   
-  if (userRole === 'child' || userMode === 'kid') {
-    // Kid mode: Use kid access token from localStorage
-    const kidToken = localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
-    if (kidToken) {
-      accessToken = kidToken;
-      tokenSource = 'kid-session';
-      console.log('👶 Kid mode detected - using kid access token for API call:', {
-        tokenPreview: `${kidToken.substring(0, 30)}...`
-      });
-    } else {
-      console.error('❌ Kid mode detected but no kid token found!');
-    }
+  if (kidToken) {
+    // Actual kid login: Use kid access token from localStorage
+    accessToken = kidToken;
+    tokenSource = 'kid-session';
+    console.log('👶 Kid mode detected - using kid access token for API call:', {
+      tokenPreview: `${kidToken.substring(0, 30)}...`
+    });
   } else {
-    // Parent mode: Use Supabase session
+    // Parent mode (or parent viewing kid): Use Supabase session
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
       
@@ -104,6 +98,34 @@ async function apiCall(endpoint: string, options: RequestInit = {}, retryCount =
           const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
           if (refreshError || !refreshData.session) {
             console.error('❌ Token refresh failed:', refreshError?.message);
+            
+            // Check if user account was deleted
+            if (refreshError?.message?.includes('user_not_found') || 
+                refreshError?.message?.includes('User from sub claim in JWT does not exist')) {
+              console.error('🚨 CRITICAL: User account deleted but session still exists!');
+              console.log('🔄 Auto-clearing invalid session...');
+              
+              // Clear all session data
+              await supabase.auth.signOut();
+              localStorage.removeItem('user_role');
+              localStorage.removeItem('user_mode');
+              localStorage.removeItem('fgs_family_id');
+              localStorage.removeItem('fgs_selected_child_id');
+              localStorage.removeItem('kid_access_token');
+              localStorage.removeItem('kid_session_token');
+              
+              // Clear all Supabase session keys
+              const allKeys = Object.keys(localStorage);
+              const supabaseKeys = allKeys.filter(key => 
+                key.startsWith('sb-') || key.includes('supabase') || key.includes('auth-token')
+              );
+              supabaseKeys.forEach(key => localStorage.removeItem(key));
+              
+              console.log('✅ Invalid session cleared. Redirecting to login...');
+              redirectToLogin('User account deleted');
+              throw new Error('User account was deleted. Session cleared.');
+            }
+            
             // Clear session and redirect to login
             await supabase.auth.signOut();
             redirectToLogin('Token refresh failed');
@@ -194,6 +216,18 @@ async function apiCall(endpoint: string, options: RequestInit = {}, retryCount =
   }
   
   headers['Authorization'] = `Bearer ${accessToken}`;
+  
+  // 🆕 WORKAROUND: Also send X-Supabase-Auth header
+  // Supabase Edge Functions may strip Authorization header even when "Verify JWT" is disabled
+  headers['X-Supabase-Auth'] = `Bearer ${accessToken}`;
+  
+  console.log('📤 API Request Headers:', {
+    endpoint,
+    hasAuthorization: !!headers['Authorization'],
+    hasXSupabaseAuth: !!headers['X-Supabase-Auth'],
+    authPreview: headers['Authorization']?.substring(0, 30) + '...',
+    tokenSource
+  });
 
   const response = await fetch(url, {
     ...options,
@@ -206,6 +240,44 @@ async function apiCall(endpoint: string, options: RequestInit = {}, retryCount =
     ok: response.ok,
     tokenSource
   });
+
+  // Handle 403 errors - check if user account was deleted
+  if (response.status === 403) {
+    try {
+      const errorBody = await response.clone().json();
+      const errorStr = JSON.stringify(errorBody);
+      
+      if (errorStr.includes('user_not_found') || 
+          errorStr.includes('User from sub claim in JWT does not exist') ||
+          errorStr.includes('User does not exist')) {
+        console.error('🚨 CRITICAL: User account deleted but session still exists!');
+        console.log('🔄 Auto-clearing invalid session...');
+        
+        // Clear all session data
+        await supabase.auth.signOut();
+        localStorage.removeItem('user_role');
+        localStorage.removeItem('user_mode');
+        localStorage.removeItem('fgs_family_id');
+        localStorage.removeItem('fgs_selected_child_id');
+        localStorage.removeItem('kid_access_token');
+        localStorage.removeItem('kid_session_token');
+        
+        // Clear all Supabase session keys
+        const allKeys = Object.keys(localStorage);
+        const supabaseKeys = allKeys.filter(key => 
+          key.startsWith('sb-') || key.includes('supabase') || key.includes('auth-token')
+        );
+        supabaseKeys.forEach(key => localStorage.removeItem(key));
+        
+        console.log('✅ Invalid session cleared. Redirecting to login...');
+        redirectToLogin('User account deleted');
+        throw new Error('User account was deleted. Session cleared.');
+      }
+    } catch (e) {
+      // If we can't parse the error, just continue with normal error handling
+      console.log('Could not parse 403 error body:', e);
+    }
+  }
 
   // Handle 401 errors by attempting to refresh the token
   if (response.status === 401 && retryCount === 0) {
@@ -299,10 +371,10 @@ async function apiCall(endpoint: string, options: RequestInit = {}, retryCount =
 
 // ===== FAMILIES & CHILDREN =====
 
-export async function createFamily(name: string, parentIds: string[]) {
+export async function createFamily(name: string, parentIds: string[], timezone?: string) {
   return apiCall('/families', {
     method: 'POST',
-    body: JSON.stringify({ name, parentIds }),
+    body: JSON.stringify({ name, parentIds, timezone }),
   });
 }
 
@@ -601,24 +673,18 @@ async function getAuthHeaders() {
   let accessToken: string | null = null;
   let tokenSource: string = 'none';
   
-  // CRITICAL: Check if user is in kid mode first
-  const userRole = localStorage.getItem('user_role');
-  const userMode = localStorage.getItem('user_mode');
+  // CRITICAL: Check if this is an actual kid login (has kid token)
+  const kidToken = localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
   
-  if (userRole === 'child' || userMode === 'kid') {
-    // Kid mode: Use kid access token from localStorage
-    const kidToken = localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
-    if (kidToken) {
-      accessToken = kidToken;
-      tokenSource = 'kid-session';
-      console.log('👶 Kid mode detected - using kid access token for API call:', {
-        tokenPreview: `${kidToken.substring(0, 30)}...`
-      });
-    } else {
-      console.error('❌ Kid mode detected but no kid token found!');
-    }
+  if (kidToken) {
+    // Actual kid login: Use kid access token from localStorage
+    accessToken = kidToken;
+    tokenSource = 'kid-session';
+    console.log('👶 Kid mode detected - using kid access token for API call:', {
+      tokenPreview: `${kidToken.substring(0, 30)}...`
+    });
   } else {
-    // Parent mode: Use Supabase session
+    // Parent mode (or parent viewing kid): Use Supabase session
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
       
@@ -637,6 +703,34 @@ async function getAuthHeaders() {
           const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
           if (refreshError || !refreshData.session) {
             console.error('❌ Token refresh failed:', refreshError?.message);
+            
+            // Check if user account was deleted
+            if (refreshError?.message?.includes('user_not_found') || 
+                refreshError?.message?.includes('User from sub claim in JWT does not exist')) {
+              console.error('🚨 CRITICAL: User account deleted but session still exists!');
+              console.log('🔄 Auto-clearing invalid session...');
+              
+              // Clear all session data
+              await supabase.auth.signOut();
+              localStorage.removeItem('user_role');
+              localStorage.removeItem('user_mode');
+              localStorage.removeItem('fgs_family_id');
+              localStorage.removeItem('fgs_selected_child_id');
+              localStorage.removeItem('kid_access_token');
+              localStorage.removeItem('kid_session_token');
+              
+              // Clear all Supabase session keys
+              const allKeys = Object.keys(localStorage);
+              const supabaseKeys = allKeys.filter(key => 
+                key.startsWith('sb-') || key.includes('supabase') || key.includes('auth-token')
+              );
+              supabaseKeys.forEach(key => localStorage.removeItem(key));
+              
+              console.log('✅ Invalid session cleared. Redirecting to login...');
+              redirectToLogin('User account deleted');
+              throw new Error('User account was deleted. Session cleared.');
+            }
+            
             // Clear session and redirect to login
             await supabase.auth.signOut();
             redirectToLogin('Token refresh failed');

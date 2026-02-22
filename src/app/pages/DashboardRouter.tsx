@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Dashboard } from './Dashboard';
-import { KidAdventureHome } from './KidAdventureHome';
+import { KidDashboard } from './KidDashboard';
 
 /**
  * DashboardRouter - Routes to the appropriate dashboard based on user role
  * 
- * - Kids (logged in via PIN) → KidAdventureHome (Unified adventure experience)
+ * - Kids (logged in via PIN) → KidDashboard (Unified adventure experience)
  * - Parents (logged in via email) → Dashboard (Analytics and controls)
  * 
  * Note: We check localStorage directly instead of using useAuth() because
@@ -38,9 +38,9 @@ export function DashboardRouter() {
     };
   }, []);
 
-  // Show KidAdventureHome for children
+  // Show KidDashboard for children (unified experience for both kid login and parent "kid view")
   if (userRole === 'child') {
-    return <KidAdventureHome />;
+    return <KidDashboard />;
   }
 
   // Show regular Dashboard for parents (default)

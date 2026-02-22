@@ -93,12 +93,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         
         if (error) {
           console.error('Session refresh error:', error);
-          // Clear any stale session data
-          console.log('🧹 Clearing stale session data due to error');
+          // Clear any stale session data (ONLY for parent mode)
+          console.log('🧹 Clearing stale parent session data due to error');
           setAccessTokenState(null);
           setUserId(null);
-          localStorage.removeItem('fgs_user_id');
-          localStorage.removeItem('user_role');
+          // Only remove these if we're actually in parent mode
+          if (userRole === 'parent') {
+            localStorage.removeItem('fgs_user_id');
+            localStorage.removeItem('user_role');
+          }
           setIsLoading(false);
           return;
         }
@@ -139,21 +142,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUserId(session.user?.id || null);
         } else {
           console.log('No active session found - clearing all auth data');
-          // Clear stored tokens if no session exists
+          // Clear stored tokens if no session exists (ONLY for parent mode)
           setAccessTokenState(null);
           setUserId(null);
-          localStorage.removeItem('fgs_user_id');
-          localStorage.removeItem('user_role');
+          // Only remove these if we're actually in parent mode
+          if (userRole === 'parent' || !userRole) {
+            localStorage.removeItem('fgs_user_id');
+            localStorage.removeItem('user_role');
+          }
         }
         setIsLoading(false);
       } catch (error) {
         console.error('Error refreshing session:', error);
-        // Clear stale data on error
+        // Clear stale data on error (ONLY for parent mode)
         console.log('🧹 Clearing stale session data due to exception');
         setAccessTokenState(null);
         setUserId(null);
-        localStorage.removeItem('fgs_user_id');
-        localStorage.removeItem('user_role');
+        // Only remove these if we're actually in parent mode
+        const currentUserRole = localStorage.getItem('user_role');
+        if (currentUserRole === 'parent' || !currentUserRole) {
+          localStorage.removeItem('fgs_user_id');
+          localStorage.removeItem('user_role');
+        }
         setIsLoading(false);
       } finally {
         isRefreshing.current = false;
@@ -185,9 +195,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { data: { session }, error } = await supabase.auth.getSession();
       
       // If no session and we have user_id in localStorage, it means session expired
+      // BUT: Only redirect if NOT in kid mode (kids don't use Supabase sessions)
       const storedUserId = localStorage.getItem('fgs_user_id');
-      if (storedUserId && (!session || error)) {
-        console.log('🚨 Session expired but user_id exists - redirecting to login');
+      const userMode = localStorage.getItem('user_mode');
+      if (storedUserId && (!session || error) && userMode !== 'kid') {
+        console.log('🚨 Parent session expired but user_id exists - redirecting to login');
         localStorage.clear();
         window.location.replace('/parent-login');
         return;
@@ -198,6 +210,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
     
     checkSessionAndRedirect();
+
+    // Set up periodic token refresh (every 30 minutes)
+    const refreshInterval = setInterval(async () => {
+      const userRole = localStorage.getItem('user_role');
+      
+      if (userRole === 'parent') {
+        console.log('🔄 Periodic token refresh (30min)...');
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (session?.access_token) {
+          console.log('✅ Token refreshed automatically');
+          setAccessTokenState(session.access_token);
+        } else if (error) {
+          console.error('❌ Token refresh failed:', error);
+          // Try to refresh the session
+          const { error: refreshError } = await supabase.auth.refreshSession();
+          if (!refreshError) {
+            await refreshSession();
+          }
+        }
+      }
+    }, 30 * 60 * 1000); // 30 minutes
 
     // Set up auth state change listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -242,6 +276,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       subscription.unsubscribe();
       window.removeEventListener('auth-changed', handleAuthChanged);
+      clearInterval(refreshInterval);
     };
   }, []);
 

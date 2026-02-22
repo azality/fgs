@@ -3,6 +3,8 @@ import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
 import * as kv from "./kv_store.tsx";
+import * as monitoring from "./monitoring.ts";
+import { notifyFamilyParents } from "./notifications.tsx";
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { 
   requireAuth, 
@@ -61,6 +63,22 @@ import {
   isPinLocked,
   getDeviceHash
 } from "./kidSessions.tsx";
+import {
+  getTodayInTimezone,
+  getDateInTimezone,
+  isValidTimezone
+} from "./timezoneUtils.ts";
+import {
+  createPrayerClaim,
+  getChildClaims,
+  getClaimsForDate,
+  getPendingClaimsForFamily,
+  approvePrayerClaim,
+  denyPrayerClaim,
+  getPrayerStats,
+  PRAYER_NAMES,
+  PRAYER_TIMES
+} from "./prayerLogging.tsx";
 
 const app = new Hono();
 
@@ -75,8 +93,31 @@ const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
 app.use(
   "/*",
   cors({
-    origin: "*",
-    allowHeaders: ["Content-Type", "Authorization", "authorization", "x-client-info", "apikey"],
+    origin: (origin) => {
+      // Allow requests with no origin (mobile apps, Postman, etc.)
+      if (!origin) return true;
+      
+      // Production allowed origins
+      const allowedOrigins = [
+        'capacitor://localhost',           // iOS Parent app
+        'capacitor://kidapp',               // iOS Kid app
+        'http://localhost:5173',            // Development server
+        'http://127.0.0.1:5173',            // Development server (alternate)
+        'https://localhost:5173',           // HTTPS development
+        // Add your production web domain when deployed:
+        // 'https://familygrowth.app',
+      ];
+      
+      // Check if origin is allowed
+      if (allowedOrigins.includes(origin)) {
+        return true;
+      }
+      
+      // Log unauthorized origin attempts for security monitoring
+      console.warn(`⚠️ CORS: Blocked request from unauthorized origin: ${origin}`);
+      return false;
+    },
+    allowHeaders: ["Content-Type", "Authorization", "authorization", "x-client-info", "apikey", "X-Supabase-Auth", "x-supabase-auth"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     exposeHeaders: ["Content-Length", "Content-Type"],
     maxAge: 600,
@@ -90,15 +131,106 @@ app.options("*", (c) => {
   return c.text("", 204, {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, authorization, x-client-info, apikey",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, authorization, x-client-info, apikey, X-Supabase-Auth, x-supabase-auth",
     "Access-Control-Max-Age": "600"
   });
 });
 
-// Health check endpoint
-app.get("/make-server-f116e23f/health", (c) => {
-  return c.json({ status: "ok" });
+// Debug middleware - log ALL incoming headers to diagnose JWT Verify issue
+app.use("/*", async (c, next) => {
+  const hasAuthHeader = !!(c.req.header("Authorization") || c.req.header("authorization"));
+  const allHeaders = Object.fromEntries(c.req.raw.headers.entries());
+  
+  console.log('📥 Incoming request:', {
+    method: c.req.method,
+    path: c.req.path,
+    hasAuthHeader,
+    headers: {
+      authorization: c.req.header("Authorization"),
+      authorizationLower: c.req.header("authorization"),
+      apikey: c.req.header("apikey"),
+      contentType: c.req.header("Content-Type")
+    },
+    totalHeaderCount: Object.keys(allHeaders).length,
+    headerKeys: Object.keys(allHeaders)
+  });
+  
+  // Critical diagnostic for missing auth headers
+  if (!hasAuthHeader && c.req.path.includes("/children/") && c.req.method === "GET") {
+    console.error('🚨 CRITICAL: Authorization header missing on authenticated endpoint!');
+    console.error('   This usually means "Verify JWT" is enabled in Supabase Edge Functions settings.');
+    console.error('   All headers received:', allHeaders);
+    console.error('   ⚠️  ACTION: Go to Supabase Dashboard → Edge Functions → make-server-f116e23f → Settings');
+    console.error('   ⚠️  DISABLE the "Verify JWT" toggle');
+  }
+  
+  await next();
 });
+
+// ================================================================
+// MONITORING ENDPOINTS
+// ================================================================
+
+// Health check endpoint (enhanced with monitoring)
+app.get("/make-server-f116e23f/health", async (c) => {
+  try {
+    const health = await monitoring.getHealthStatus();
+    return c.json(health);
+  } catch (error: any) {
+    console.error('Health check failed:', error);
+    return c.json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      error: error.message
+    }, 500);
+  }
+});
+
+// Metrics endpoint (last 60 minutes by default)
+app.get("/make-server-f116e23f/metrics", async (c) => {
+  try {
+    const windowMinutes = parseInt(c.req.query('window') || '60');
+    const metrics = monitoring.getMetricsSummary(windowMinutes);
+    return c.json(metrics);
+  } catch (error: any) {
+    console.error('Metrics endpoint failed:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Alerts endpoint (check for triggered alerts)
+app.get("/make-server-f116e23f/alerts", async (c) => {
+  try {
+    const windowMinutes = parseInt(c.req.query('window') || '5');
+    const alerts = monitoring.checkAlerts(windowMinutes);
+    return c.json({
+      timestamp: new Date().toISOString(),
+      window: `${windowMinutes} minutes`,
+      alerts,
+      count: alerts.length
+    });
+  } catch (error: any) {
+    console.error('Alerts endpoint failed:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// SECURITY: DEBUG/TEST ENDPOINTS REMOVED FOR PRODUCTION
+// ═══════════════════════════════════════════════════════════════
+// The following endpoints were removed to prevent security vulnerabilities:
+//
+// 1. POST /test/cleanup - Deleted test users without auth
+//    Risk: Anyone could delete users, including production data
+//    Removed: February 21, 2026
+//
+// 2. GET /debug/all-children - Exposed ALL children data
+//    Risk: Data breach - no authentication required
+//    Removed: Earlier (already deleted)
+//
+// If you need test cleanup in development, use Supabase Dashboard:
+// https://supabase.com/dashboard → Authentication → Users → Delete
+// ═══════════════════════════════════════════════════════════════
 
 // PUBLIC: Get children for family (no auth required)
 // Used by kid login to display available children
@@ -195,6 +327,7 @@ app.post("/make-server-f116e23f/public/verify-family-code", async (c) => {
 // Sign up new user (parent)
 app.post(
   "/make-server-f116e23f/auth/signup",
+  rateLimit("signup", { maxAttempts: 5, windowMs: 60 * 60 * 1000 }), // 5 signups per hour per IP
   validate(validateSignup),
   async (c) => {
     try {
@@ -254,6 +387,200 @@ app.get(
   }
 );
 
+// Delete account (Apple App Store requirement)
+app.delete(
+  "/make-server-f116e23f/auth/account",
+  requireAuth,
+  async (c) => {
+    try {
+      const userId = getAuthUserId(c);
+      const body = await c.req.json();
+      const { password } = body;
+
+      if (!password) {
+        return c.json({ error: 'Password confirmation required' }, 400);
+      }
+
+      // Get user data
+      const user = await kv.get(`user:${userId}`);
+      if (!user) {
+        return c.json({ error: 'User not found' }, 404);
+      }
+
+      // Verify password before deletion
+      const supabase = createClient(supabaseUrl, supabaseServiceKey);
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: password,
+      });
+
+      if (signInError) {
+        return c.json({ error: 'Invalid password' }, 401);
+      }
+
+      // Get family to determine deletion scope
+      const familyId = user.familyId;
+      let deletionScope: 'account_only' | 'entire_family' = 'account_only';
+      let deletedItems: string[] = [];
+
+      if (familyId) {
+        const family = await kv.get(familyId);
+        
+        if (family) {
+          const parentIds = family.parentIds || [];
+          const isSoleParent = parentIds.length === 1 && parentIds[0] === userId;
+
+          if (isSoleParent) {
+            // SOLE PARENT: Delete entire family and all children
+            deletionScope = 'entire_family';
+
+            // 1. Delete all children
+            const allChildren = await kv.getByPrefix('child:');
+            const familyChildren = allChildren.filter((child: any) => child.familyId === familyId);
+            
+            for (const child of familyChildren) {
+              // Delete child sessions
+              const sessions = await kv.getByPrefix(`kidsession:${child.id}:`);
+              for (const session of sessions) {
+                await kv.del(session.sessionToken);
+              }
+              
+              // Delete child progress data
+              await kv.del(`childprogress:${child.id}`);
+              
+              // Delete child
+              await kv.del(`child:${child.id}`);
+              deletedItems.push(`Child: ${child.name}`);
+            }
+
+            // 2. Delete all trackable items
+            const allItems = await kv.getByPrefix('trackableitem:');
+            const familyItems = allItems.filter((item: any) => item.familyId === familyId);
+            for (const item of familyItems) {
+              await kv.del(`trackableitem:${item.id}`);
+              deletedItems.push(`Habit/Behavior: ${item.name}`);
+            }
+
+            // 3. Delete all rewards
+            const allRewards = await kv.getByPrefix('reward:');
+            const familyRewards = allRewards.filter((reward: any) => reward.familyId === familyId);
+            for (const reward of familyRewards) {
+              await kv.del(`reward:${reward.id}`);
+              deletedItems.push(`Reward: ${reward.name}`);
+            }
+
+            // 4. Delete all milestones
+            const allMilestones = await kv.getByPrefix('milestone:');
+            const familyMilestones = allMilestones.filter((milestone: any) => milestone.familyId === familyId);
+            for (const milestone of familyMilestones) {
+              await kv.del(`milestone:${milestone.id}`);
+              deletedItems.push(`Milestone: ${milestone.name}`);
+            }
+
+            // 5. Delete all logs
+            const allLogs = await kv.getByPrefix('log:');
+            const familyLogs = allLogs.filter((log: any) => {
+              // Check if log belongs to family children
+              return familyChildren.some((child: any) => child.id === log.childId);
+            });
+            for (const log of familyLogs) {
+              await kv.del(`log:${log.id}`);
+            }
+            deletedItems.push(`${familyLogs.length} activity logs`);
+
+            // 6. Delete all custom quests
+            const allQuests = await kv.getByPrefix('customquest:');
+            const familyQuests = allQuests.filter((quest: any) => quest.familyId === familyId);
+            for (const quest of familyQuests) {
+              await kv.del(`customquest:${quest.id}`);
+            }
+
+            // 7. Delete quest settings
+            await kv.del(`questsettings:${familyId}`);
+
+            // 8. Delete prayer claims
+            const allClaims = await kv.getByPrefix('prayerclaim:');
+            const familyClaims = allClaims.filter((claim: any) => {
+              return familyChildren.some((child: any) => child.id === claim.childId);
+            });
+            for (const claim of familyClaims) {
+              await kv.del(`prayerclaim:${claim.id}`);
+            }
+            deletedItems.push(`${familyClaims.length} prayer claims`);
+
+            // 9. Delete wishlist items
+            const allWishlistItems = await kv.getByPrefix('wishlistitem:');
+            const familyWishlistItems = allWishlistItems.filter((item: any) => {
+              return familyChildren.some((child: any) => child.id === item.childId);
+            });
+            for (const item of familyWishlistItems) {
+              await kv.del(`wishlistitem:${item.id}`);
+            }
+
+            // 10. Delete redemptions
+            const allRedemptions = await kv.getByPrefix('redemption:');
+            const familyRedemptions = allRedemptions.filter((redemption: any) => {
+              return familyChildren.some((child: any) => child.id === redemption.childId);
+            });
+            for (const redemption of familyRedemptions) {
+              await kv.del(`redemption:${redemption.id}`);
+            }
+
+            // 11. Delete invite code mapping
+            if (family.inviteCode) {
+              await kv.del(`invite:${family.inviteCode}`);
+            }
+
+            // 12. Delete pending join requests
+            const allInvites = await kv.getByPrefix('familyinvite:');
+            const familyInvites = allInvites.filter((invite: any) => invite.familyId === familyId);
+            for (const invite of familyInvites) {
+              await kv.del(`familyinvite:${invite.id}`);
+            }
+
+            // 13. Delete family
+            await kv.del(familyId);
+            deletedItems.push(`Family: ${family.name}`);
+
+          } else {
+            // DUAL PARENT: Only remove this parent from family
+            const updatedParentIds = parentIds.filter((id: string) => id !== userId);
+            family.parentIds = updatedParentIds;
+            await kv.set(familyId, family);
+            deletedItems.push('Your account (family preserved for other parent)');
+          }
+        }
+      }
+
+      // 14. Delete user record from KV
+      await kv.del(`user:${userId}`);
+
+      // 15. Delete user from Supabase Auth
+      const { error: deleteError } = await supabase.auth.admin.deleteUser(userId);
+      if (deleteError) {
+        console.error('Failed to delete user from Supabase Auth:', deleteError);
+        // Continue anyway - KV data is already deleted
+      }
+
+      console.log(`✅ Account deleted: ${user.email} (scope: ${deletionScope})`);
+      console.log(`   Deleted items: ${deletedItems.join(', ')}`);
+
+      return c.json({
+        success: true,
+        message: 'Account deleted successfully',
+        deletionScope,
+        deletedItems
+      });
+
+    } catch (error: any) {
+      console.error('Account deletion error:', error);
+      return c.json({ 
+        error: error.message || 'Failed to delete account' 
+      }, 500);
+    }
+  }
+);
+
 // ===== FAMILIES & CHILDREN =====
 
 // Create family
@@ -264,9 +591,18 @@ app.post(
   validate(validateFamily),
   async (c) => {
     try {
-      const { name, parentIds } = getValidatedBody(c);
+      const { name, parentIds, timezone } = getValidatedBody(c);
       const userId = getAuthUserId(c);
       const familyId = `family:${Date.now()}`;
+      
+      // Validate and set timezone (default to UTC if invalid/missing)
+      let validTimezone = timezone || 'UTC';
+      try {
+        Intl.DateTimeFormat(undefined, { timeZone: validTimezone });
+      } catch {
+        console.warn(`⚠️ Invalid timezone ${timezone}, defaulting to UTC`);
+        validTimezone = 'UTC';
+      }
       
       // Generate a unique 6-character invite code
       const inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -276,8 +612,11 @@ app.post(
         name,
         parentIds: parentIds || [userId],
         inviteCode,
+        timezone: validTimezone, // NEW: Store family timezone
         createdAt: new Date().toISOString()
       };
+      
+      console.log(`✅ Creating family "${name}" with timezone: ${validTimezone}`);
       
       await kv.set(familyId, family);
       
@@ -345,6 +684,77 @@ app.get(
     return c.json({ error: 'Failed to get family' }, 500);
   }
 });
+
+// Update family timezone (Settings page)
+app.patch(
+  "/make-server-f116e23f/families/:id/timezone",
+  requireAuth,
+  requireParent,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const id = c.req.param('id');
+      const { timezone } = await c.req.json();
+      
+      if (!timezone || typeof timezone !== 'string') {
+        return c.json({ error: 'Valid timezone is required' }, 400);
+      }
+      
+      // Validate timezone using Intl API
+      try {
+        Intl.DateTimeFormat(undefined, { timeZone: timezone });
+      } catch {
+        return c.json({ error: 'Invalid timezone' }, 400);
+      }
+      
+      // Get family
+      const family = await kv.get(id);
+      if (!family) {
+        return c.json({ error: 'Family not found' }, 404);
+      }
+      
+      // Update timezone
+      family.timezone = timezone;
+      await kv.set(id, family);
+      
+      console.log(`✅ Updated family ${family.name} timezone to: ${timezone}`);
+      
+      return c.json({ success: true, family });
+    } catch (error) {
+      console.error('Failed to update timezone:', error);
+      return c.json({ error: 'Failed to update timezone' }, 500);
+    }
+  }
+);
+
+// Get children for family (authenticated - requires family access)
+app.get(
+  "/make-server-f116e23f/families/:familyId/children",
+  requireAuth,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const familyId = c.req.param('familyId');
+      
+      // Get all children
+      const allChildren = await kv.getByPrefix('child:');
+      
+      // Filter children by family
+      const familyChildren = allChildren.filter((child: any) => child.familyId === familyId);
+      
+      // Remove PIN from all children
+      const childrenWithoutPins = familyChildren.map((child: any) => {
+        const { pin: _, ...childWithoutPin } = child;
+        return childWithoutPin;
+      });
+      
+      return c.json(childrenWithoutPins);
+    } catch (error) {
+      console.error('❌ Error fetching family children:', error);
+      return c.json({ error: 'Failed to fetch children' }, 500);
+    }
+  }
+);
 
 // Join family by invite code
 app.post(
@@ -469,6 +879,22 @@ app.post(
       };
       
       await kv.set(requestId, joinRequest);
+      
+      // Notify family parents about new join request (non-blocking)
+      try {
+        await notifyFamilyParents(familyId, {
+          title: '👥 New Join Request',
+          body: `${joinRequest.requesterName} wants to join your family`,
+          data: {
+            type: 'join_request',
+            itemId: requestId,
+            route: '/settings'
+          }
+        });
+      } catch (notifyError) {
+        // Non-blocking - don't fail join request if notification fails
+        console.error('Failed to send join request notification:', notifyError);
+      }
       
       return c.json({ 
         success: true, 
@@ -747,6 +1173,30 @@ app.post(
   }
 );
 
+// Get child by ID (authenticated - requires child access)
+app.get(
+  "/make-server-f116e23f/children/:childId",
+  requireAuth,
+  requireChildAccess,
+  async (c) => {
+    try {
+      const childId = c.req.param('childId');
+      const child = await kv.get(childId);
+      
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+      
+      // Return child without PIN
+      const { pin: _, ...childWithoutPin } = child;
+      return c.json(childWithoutPin);
+    } catch (error) {
+      console.error('❌ Error fetching child:', error);
+      return c.json({ error: 'Failed to fetch child' }, 500);
+    }
+  }
+);
+
 // Verify child PIN
 app.post(
   "/make-server-f116e23f/children/:id/verify-pin",
@@ -893,7 +1343,11 @@ app.post(
         // Track failure
         const failureResult = await trackPinFailure(child.id, deviceHash);
         
+        // MONITORING: Track failed kid login
+        monitoring.trackKidLogin(false, child.id, familyCode.toUpperCase(), 'incorrect_pin');
+        
         if (failureResult.locked) {
+          monitoring.trackRateLimit('/kid/login', `child:${child.id}`, 'kid_login');
           return c.json({
             success: false,
             error: `Too many failed attempts. Locked for ${Math.ceil((failureResult.retryAfter || 0) / 60)} minutes.`,
@@ -915,6 +1369,9 @@ app.post(
       // Reset failure tracking
       await resetPinFailures(child.id, deviceHash);
       
+      // MONITORING: Track successful kid login
+      monitoring.trackKidLogin(true, child.id, familyCode.toUpperCase());
+      
       // Return kid access token and info
       const { pin: _, ...childWithoutPin } = child;
       
@@ -934,6 +1391,8 @@ app.post(
       
     } catch (error) {
       console.error('Kid login error:', error);
+      monitoring.trackError(500, '/kid/login', error as Error);
+      monitoring.trackKidLogin(false, undefined, undefined, (error as Error).message);
       return c.json({ 
         success: false, 
         error: 'Login failed. Please try again.' 
@@ -976,34 +1435,30 @@ app.get(
   async (c) => {
   try {
     const familyId = c.req.param('familyId');
+    console.log(`📡 Getting children for family: ${familyId}`);
+    
     const allChildren = await kv.getByPrefix('child:');
+    console.log(`📊 Total children in database: ${allChildren.length}`);
+    
     const familyChildren = allChildren.filter((child: any) => child.familyId === familyId);
+    console.log(`✅ Children for family ${familyId}: ${familyChildren.length}`);
+    
+    if (familyChildren.length > 0) {
+      console.log('📋 Children found:', familyChildren.map((c: any) => ({ id: c.id, name: c.name, familyId: c.familyId })));
+    } else {
+      console.warn(`⚠️ No children found for family ${familyId}`);
+      console.log('📋 All families in children:', [...new Set(allChildren.map((c: any) => c.familyId))]);
+    }
     
     return c.json(familyChildren);
   } catch (error) {
+    console.error('❌ Error getting children:', error);
     return c.json({ error: 'Failed to get children' }, 500);
   }
 });
 
-// Get child by ID
-app.get(
-  "/make-server-f116e23f/children/:id",
-  requireAuth,
-  requireFamilyAccess,
-  async (c) => {
-  try {
-    const id = c.req.param('id');
-    const child = await kv.get(id);
-    
-    if (!child) {
-      return c.json({ error: 'Child not found' }, 404);
-    }
-    
-    return c.json(child);
-  } catch (error) {
-    return c.json({ error: 'Failed to get child' }, 500);
-  }
-});
+// NOTE: GET /children/:id endpoint is defined earlier in the file with requireChildAccess middleware
+// Duplicate removed to prevent route conflicts
 
 // Update child points
 app.patch(
@@ -1074,7 +1529,13 @@ app.post(
     if (trackableItemId) {
       const item = await kv.get(trackableItemId);
       if (item && item.isSingleton) {
-        const today = new Date().toISOString().split('T')[0];
+        // Get family timezone for accurate day boundaries
+        const childForTz = await kv.get(childId);
+        const family = childForTz?.familyId ? await kv.get(childForTz.familyId) : null;
+        const timezone = family?.timezone || 'UTC';
+        
+        // NEW: Use timezone-aware date
+        const today = getTodayInTimezone(timezone);
         const singletonKey = `singleton:${childId}:${trackableItemId}:${today}`;
         
         // Try to atomically acquire singleton lock
@@ -1111,7 +1572,13 @@ app.post(
     
     // === DAILY CAP: Lock-protected check (KV-safe) ===
     if (childId && eventData.points > 0 && !eventData.isAdjustment && !eventData.isRecovery && !eventData.challengeId && !eventData.quizId) {
-      const today = new Date().toISOString().split('T')[0];
+      // Get child to access family timezone
+      const childForTz = await kv.get(childId);
+      const family = childForTz?.familyId ? await kv.get(childForTz.familyId) : null;
+      const timezone = family?.timezone || 'UTC';
+      
+      // NEW: Use timezone-aware date calculation
+      const today = getTodayInTimezone(timezone);
       const capLockKey = `caplock:${childId}:${today}`;
       
       // Try to acquire cap lock (with retry logic)
@@ -1225,7 +1692,13 @@ app.post(
     if (trackableItemId) {
       const item = await kv.get(trackableItemId);
       if (item && item.isSingleton) {
-        const today = new Date().toISOString().split('T')[0];
+        // Get family timezone
+        const childForTz = await kv.get(childId);
+        const family = childForTz?.familyId ? await kv.get(childForTz.familyId) : null;
+        const timezone = family?.timezone || 'UTC';
+        
+        // NEW: Use timezone-aware date
+        const today = getTodayInTimezone(timezone);
         const singletonKey = `singleton:${childId}:${trackableItemId}:${today}`;
         await kv.set(singletonKey, {
           eventId,
@@ -1319,7 +1792,38 @@ app.get(
       .filter((event: any) => event.childId === childId && event.status !== 'voided') // Exclude voided events
       .sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
     
-    return c.json(childEvents);
+    // ✅ CRITICAL FIX: Add logged_by_display to each event
+    // This prevents UUIDs from showing in the audit trail
+    const eventsWithNames = await Promise.all(
+      childEvents.map(async (event: any) => {
+        let loggedByDisplay = 'System';
+        
+        if (event.loggedBy && event.loggedBy !== 'system') {
+          // Try to get user (parent) name first
+          const user = await kv.get(`user:${event.loggedBy}`);
+          if (user?.name) {
+            loggedByDisplay = user.name;
+          } else if (user?.email) {
+            loggedByDisplay = user.email;
+          } else {
+            // Try to get child name (in case kid logged it)
+            const child = await kv.get(event.loggedBy);
+            if (child?.name) {
+              loggedByDisplay = child.name;
+            } else {
+              loggedByDisplay = 'User';
+            }
+          }
+        }
+        
+        return {
+          ...event,
+          logged_by_display: loggedByDisplay
+        };
+      })
+    );
+    
+    return c.json(eventsWithNames);
   } catch (error) {
     return c.json({ error: 'Failed to get events' }, 500);
   }
@@ -1447,6 +1951,30 @@ app.get(
   }
 });
 
+// Delete attendance record
+app.delete(
+  "/make-server-f116e23f/attendance/:id",
+  requireAuth,
+  requireParent,
+  async (c) => {
+  try {
+    const attendanceId = c.req.param('id');
+    
+    // Check if record exists
+    const record = await kv.get(attendanceId);
+    if (!record) {
+      return c.json({ error: 'Attendance record not found' }, 404);
+    }
+    
+    // Delete the record
+    await kv.del(attendanceId);
+    return c.json({ message: 'Attendance record deleted successfully' });
+  } catch (error) {
+    console.error('Delete attendance error:', error);
+    return c.json({ error: 'Failed to delete attendance record', details: String(error) }, 500);
+  }
+});
+
 // ===== PROVIDERS =====
 
 // Create provider
@@ -1533,140 +2061,294 @@ app.delete(
 
 // ===== CHALLENGES =====
 
-// Challenge templates (defined once, used to generate instances)
-const challengeTemplates = [
-  // Daily - Easy
-  {
-    id: 'tpl_daily_fajr',
-    type: 'daily',
-    title: '🌅 Early Riser',
-    description: 'Pray Fajr on time today',
-    difficulty: 'easy',
-    bonusPoints: 5,
-    category: 'salah',
-    icon: '🌅',
-    requirements: [{ type: 'specific-items', target: 1, itemIds: ['item1'], description: 'Complete Fajr prayer' }]
-  },
-  {
-    id: 'tpl_daily_help',
-    type: 'daily',
-    title: '🤝 Helpful Hero',
-    description: 'Help a family member today',
-    difficulty: 'easy',
-    bonusPoints: 3,
-    category: 'social',
-    icon: '🤝',
-    requirements: [{ type: 'specific-items', target: 1, itemIds: ['item12'], description: 'Help a sibling or parent' }]
-  },
-  {
-    id: 'tpl_daily_clean',
-    type: 'daily',
-    title: '✨ Clean Sweep',
-    description: 'Clean your room without being asked',
-    difficulty: 'easy',
-    bonusPoints: 3,
-    category: 'general',
-    icon: '✨',
-    requirements: [{ type: 'specific-items', target: 1, itemIds: ['item13'], description: 'Clean your room' }]
-  },
-  // Daily - Medium
-  {
-    id: 'tpl_daily_all_salah',
-    type: 'daily',
-    title: '🕌 Prayer Warrior',
-    description: 'Pray all 5 daily prayers on time',
-    difficulty: 'medium',
-    bonusPoints: 10,
-    category: 'salah',
-    icon: '🕌',
-    requirements: [{ type: 'specific-items', target: 5, itemIds: ['item1', 'item2', 'item3', 'item4', 'item5'], description: 'Complete all 5 prayers' }]
-  },
-  {
-    id: 'tpl_daily_positive_day',
-    type: 'daily',
-    title: '😇 Perfect Behavior',
-    description: 'Go the whole day with no negative behaviors',
-    difficulty: 'medium',
-    bonusPoints: 8,
-    category: 'general',
-    icon: '😇',
-    requirements: [{ type: 'count', target: 0, description: 'Zero negative events today' }]
-  },
-  // Daily - Hard
-  {
-    id: 'tpl_daily_super_day',
-    type: 'daily',
-    title: '🌟 Super Star Day',
-    description: 'Earn 30+ points in positive actions today',
-    difficulty: 'hard',
-    bonusPoints: 15,
-    category: 'general',
-    icon: '🌟',
-    requirements: [{ type: 'total-points', target: 30, description: 'Earn 30 points from positive actions' }]
-  },
-  // Weekly - Easy
-  {
-    id: 'tpl_weekly_quran',
-    type: 'weekly',
-    title: '📖 Quran Reader',
-    description: 'Read Quran 5 times this week',
-    difficulty: 'easy',
-    bonusPoints: 10,
-    category: 'learning',
-    icon: '📖',
-    requirements: [{ type: 'specific-items', target: 5, itemIds: ['item6'], description: 'Complete Quran reading 5 times' }]
-  },
-  {
-    id: 'tpl_weekly_homework',
-    type: 'weekly',
-    title: '📚 Study Champion',
-    description: 'Complete homework on time every day this week',
-    difficulty: 'easy',
-    bonusPoints: 12,
-    category: 'learning',
-    icon: '📚',
-    requirements: [{ type: 'specific-items', target: 5, itemIds: ['item7'], description: 'Complete homework 5 times' }]
-  },
-  // Weekly - Medium
-  {
-    id: 'tpl_weekly_fajr_streak',
-    type: 'weekly',
-    title: '🔥 Fajr Streak Master',
-    description: 'Pray Fajr every day this week (7 days)',
-    difficulty: 'medium',
-    bonusPoints: 20,
-    category: 'salah',
-    icon: '🔥',
-    requirements: [{ type: 'streak', target: 7, itemIds: ['item1'], description: 'Maintain 7-day Fajr streak' }]
-  },
-  {
-    id: 'tpl_weekly_helper',
-    type: 'weekly',
-    title: '💪 Helping Hand Hero',
-    description: 'Help others 10 times this week',
-    difficulty: 'medium',
-    bonusPoints: 15,
-    category: 'social',
-    icon: '💪',
-    requirements: [{ type: 'specific-items', target: 10, itemIds: ['item12'], description: 'Help 10 times' }]
-  },
-  // Weekly - Hard
-  {
-    id: 'tpl_weekly_perfect',
-    type: 'weekly',
-    title: '🏆 Perfect Week',
-    description: 'Complete all prayers, homework, and have zero negative behaviors',
-    difficulty: 'hard',
-    bonusPoints: 50,
-    category: 'general',
-    icon: '🏆',
-    requirements: [
-      { type: 'specific-items', target: 35, itemIds: ['item1', 'item2', 'item3', 'item4', 'item5'], description: 'All prayers (5×7 = 35)' },
-      { type: 'specific-items', target: 5, itemIds: ['item7'], description: 'All homework (5 days)' },
-      { type: 'count', target: 0, description: 'Zero negative behaviors' }
-    ]
+// Dynamic quest template generation based on family's actual configured behaviors
+async function generateQuestTemplates(familyId: string, type: 'daily' | 'weekly') {
+  try {
+    const templates = [];
+    
+    // Get quest settings for this family
+    const questSettings = await kv.get(`questsettings:${familyId}`) || {
+      enabled: true,
+      dailyBonusPoints: 20,
+      weeklyBonusPoints: 50,
+      difficultyMultipliers: { easy: 1, medium: 1.5, hard: 2 }
+    };
+    
+    // Base bonus points based on quest type
+    const baseBonus = type === 'daily' ? questSettings.dailyBonusPoints : questSettings.weeklyBonusPoints;
+    const multipliers = questSettings.difficultyMultipliers;
+    
+    // Helper function to calculate bonus points based on difficulty
+    const calculateBonus = (difficulty: 'easy' | 'medium' | 'hard') => {
+      return Math.round(baseBonus * (multipliers[difficulty] || 1));
+    };
+    
+    // Fetch all trackable items for this family
+    const allItems = await kv.getByPrefix(`item:${familyId}:`);
+    
+    // Categorize items
+    const salahItems = allItems.filter((item: any) => item.category === 'salah');
+    const positiveItems = allItems.filter((item: any) => 
+      item.category === 'behavior' && item.points > 0
+    );
+    const negativeItems = allItems.filter((item: any) => 
+      item.category === 'behavior' && item.points < 0
+    );
+    const habitItems = allItems.filter((item: any) => item.category === 'habit');
+    
+    // DAILY QUESTS
+    if (type === 'daily') {
+      // Easy - Single Salah
+      if (salahItems.length > 0) {
+        const fajr = salahItems.find((s: any) => s.name.toLowerCase().includes('fajr'));
+        if (fajr) {
+          templates.push({
+            id: `tpl_daily_fajr_${familyId}`,
+            type: 'daily',
+            title: '🌅 Early Riser',
+            description: `Pray ${fajr.name} on time today`,
+            difficulty: 'easy',
+            bonusPoints: calculateBonus('easy'),
+            category: 'salah',
+            icon: '🌅',
+            requirements: [{ 
+              type: 'specific-items', 
+              target: 1, 
+              itemIds: [fajr.id], 
+              description: `Complete ${fajr.name} prayer` 
+            }]
+          });
+        }
+        
+        // Add other individual prayer quests
+        salahItems.slice(0, 3).forEach((salah: any) => {
+          if (!salah.name.toLowerCase().includes('fajr')) {
+            templates.push({
+              id: `tpl_daily_${salah.id}`,
+              type: 'daily',
+              title: `🕌 ${salah.name} Champion`,
+              description: `Pray ${salah.name} on time today`,
+              difficulty: 'easy',
+              bonusPoints: calculateBonus('easy'),
+              category: 'salah',
+              icon: '🕌',
+              requirements: [{ 
+                type: 'specific-items', 
+                target: 1, 
+                itemIds: [salah.id], 
+                description: `Complete ${salah.name}` 
+              }]
+            });
+          }
+        });
+      }
+      
+      // Easy - Single Positive Behavior
+      positiveItems.slice(0, 3).forEach((behavior: any) => {
+        const icons = ['✨', '🤝', '⭐', '💪', '🎯'];
+        const titles = ['Super Star', 'Helpful Hero', 'Amazing', 'Champion', 'Master'];
+        const randomIcon = icons[Math.floor(Math.random() * icons.length)];
+        const randomTitle = titles[Math.floor(Math.random() * titles.length)];
+        
+        templates.push({
+          id: `tpl_daily_${behavior.id}`,
+          type: 'daily',
+          title: `${randomIcon} ${behavior.name} ${randomTitle}`,
+          description: `${behavior.name} today`,
+          difficulty: 'easy',
+          bonusPoints: calculateBonus('easy'),
+          category: 'behavior',
+          icon: randomIcon,
+          requirements: [{ 
+            type: 'specific-items', 
+            target: 1, 
+            itemIds: [behavior.id], 
+            description: behavior.name 
+          }]
+        });
+      });
+      
+      // Medium - All 5 Prayers
+      if (salahItems.length >= 5) {
+        templates.push({
+          id: `tpl_daily_all_salah_${familyId}`,
+          type: 'daily',
+          title: '🕌 Prayer Warrior',
+          description: 'Pray all 5 daily prayers on time',
+          difficulty: 'medium',
+          bonusPoints: calculateBonus('medium'),
+          category: 'salah',
+          icon: '🕌',
+          requirements: [{ 
+            type: 'specific-items', 
+            target: 5, 
+            itemIds: salahItems.slice(0, 5).map((s: any) => s.id), 
+            description: 'Complete all 5 prayers' 
+          }]
+        });
+      }
+      
+      // Medium - Zero Negative Behaviors
+      if (negativeItems.length > 0) {
+        templates.push({
+          id: `tpl_daily_perfect_behavior_${familyId}`,
+          type: 'daily',
+          title: '😇 Perfect Behavior',
+          description: 'Go the whole day with no negative behaviors',
+          difficulty: 'medium',
+          bonusPoints: calculateBonus('medium'),
+          category: 'behavior',
+          icon: '😇',
+          requirements: [{ 
+            type: 'count', 
+            target: 0, 
+            description: 'Zero negative events today' 
+          }]
+        });
+      }
+      
+      // Medium - Multiple Positive Behaviors
+      if (positiveItems.length >= 3) {
+        const selectedBehaviors = positiveItems.slice(0, 3);
+        templates.push({
+          id: `tpl_daily_multi_behavior_${familyId}`,
+          type: 'daily',
+          title: '⭐ Multi-Tasker',
+          description: `Complete ${selectedBehaviors.map((b: any) => b.name).join(', ')}`,
+          difficulty: 'medium',
+          bonusPoints: calculateBonus('medium'),
+          category: 'behavior',
+          icon: '⭐',
+          requirements: [{ 
+            type: 'specific-items', 
+            target: selectedBehaviors.length, 
+            itemIds: selectedBehaviors.map((b: any) => b.id), 
+            description: `Complete ${selectedBehaviors.length} different tasks` 
+          }]
+        });
+      }
+      
+      // Hard - Point Goal
+      templates.push({
+        id: `tpl_daily_points_${familyId}`,
+        type: 'daily',
+        title: '🌟 Super Star Day',
+        description: 'Earn 30+ points in positive actions today',
+        difficulty: 'hard',
+        bonusPoints: calculateBonus('hard'),
+        category: 'general',
+        icon: '🌟',
+        requirements: [{ 
+          type: 'total-points', 
+          target: 30, 
+          description: 'Earn 30 points from positive actions' 
+        }]
+      });
+    }
+    
+    // WEEKLY QUESTS
+    if (type === 'weekly') {
+      // Easy - Repeat Positive Behavior
+      positiveItems.slice(0, 2).forEach((behavior: any) => {
+        const icons = ['📚', '📖', '🎓', '💼', '🎯'];
+        const randomIcon = icons[Math.floor(Math.random() * icons.length)];
+        
+        templates.push({
+          id: `tpl_weekly_${behavior.id}`,
+          type: 'weekly',
+          title: `${randomIcon} ${behavior.name} Champion`,
+          description: `${behavior.name} 5 times this week`,
+          difficulty: 'easy',
+          bonusPoints: calculateBonus('easy'),
+          category: 'behavior',
+          icon: randomIcon,
+          requirements: [{ 
+            type: 'specific-items', 
+            target: 5, 
+            itemIds: [behavior.id], 
+            description: `${behavior.name} 5 times` 
+          }]
+        });
+      });
+      
+      // Medium - Fajr Streak (if Fajr exists)
+      if (salahItems.length > 0) {
+        const fajr = salahItems.find((s: any) => s.name.toLowerCase().includes('fajr'));
+        if (fajr) {
+          templates.push({
+            id: `tpl_weekly_fajr_streak_${familyId}`,
+            type: 'weekly',
+            title: '🔥 Fajr Streak Master',
+            description: 'Pray Fajr every day this week (7 days)',
+            difficulty: 'medium',
+            bonusPoints: calculateBonus('medium'),
+            category: 'salah',
+            icon: '🔥',
+            requirements: [{ 
+              type: 'specific-items', 
+              target: 7, 
+              itemIds: [fajr.id], 
+              description: 'Maintain 7-day Fajr streak' 
+            }]
+          });
+        }
+      }
+      
+      // Medium - Multiple Behavior Repetitions
+      if (positiveItems.length >= 2) {
+        const behavior = positiveItems[Math.floor(Math.random() * positiveItems.length)];
+        templates.push({
+          id: `tpl_weekly_consistent_${behavior.id}`,
+          type: 'weekly',
+          title: '💪 Consistency Champion',
+          description: `${behavior.name} 10 times this week`,
+          difficulty: 'medium',
+          bonusPoints: calculateBonus('medium'),
+          category: 'behavior',
+          icon: '💪',
+          requirements: [{ 
+            type: 'specific-items', 
+            target: 10, 
+            itemIds: [behavior.id], 
+            description: `${behavior.name} 10 times` 
+          }]
+        });
+      }
+      
+      // Hard - Perfect Week
+      if (salahItems.length >= 5 && positiveItems.length > 0) {
+        templates.push({
+          id: `tpl_weekly_perfect_${familyId}`,
+          type: 'weekly',
+          title: '🏆 Perfect Week',
+          description: 'Complete all prayers every day and have zero negative behaviors',
+          difficulty: 'hard',
+          bonusPoints: calculateBonus('hard'),
+          category: 'general',
+          icon: '🏆',
+          requirements: [
+            { 
+              type: 'specific-items', 
+              target: 35, 
+              itemIds: salahItems.slice(0, 5).map((s: any) => s.id), 
+              description: 'All prayers (5×7 = 35)' 
+            },
+            { 
+              type: 'count', 
+              target: 0, 
+              description: 'Zero negative behaviors' 
+            }
+          ]
+        });
+      }
+    }
+    
+    return templates;
+  } catch (error) {
+    console.error('Error generating quest templates:', error);
+    return [];
   }
-];
+}
 
 // Calculate challenge progress based on point events
 async function calculateChallengeProgress(challenge: any, childId: string) {
@@ -1710,6 +2392,362 @@ async function calculateChallengeProgress(challenge: any, childId: string) {
   }
 }
 
+// ===== QUEST SETTINGS =====
+
+// Get quest settings for a family
+app.get(
+  "/make-server-f116e23f/families/:familyId/quest-settings",
+  requireAuth,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const { familyId } = c.req.param();
+      
+      // Get quest settings or return defaults
+      const settings = await kv.get(`questsettings:${familyId}`) || {
+        enabled: true,
+        dailyBonusPoints: 20,
+        weeklyBonusPoints: 50,
+        difficultyMultipliers: {
+          easy: 1,
+          medium: 1.5,
+          hard: 2
+        }
+      };
+      
+      return c.json(settings);
+    } catch (error) {
+      console.error('Get quest settings error:', error);
+      return c.json({ error: 'Failed to get quest settings' }, 500);
+    }
+  }
+);
+
+// Update quest settings for a family
+app.put(
+  "/make-server-f116e23f/families/:familyId/quest-settings",
+  requireAuth,
+  requireParent,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const { familyId } = c.req.param();
+      const { enabled, dailyBonusPoints, weeklyBonusPoints, difficultyMultipliers } = await c.req.json();
+      
+      // Validation
+      if (typeof enabled !== 'boolean') {
+        return c.json({ error: 'enabled must be a boolean' }, 400);
+      }
+      
+      if (dailyBonusPoints !== undefined && (typeof dailyBonusPoints !== 'number' || dailyBonusPoints < 0 || dailyBonusPoints > 1000)) {
+        return c.json({ error: 'dailyBonusPoints must be between 0 and 1000' }, 400);
+      }
+      
+      if (weeklyBonusPoints !== undefined && (typeof weeklyBonusPoints !== 'number' || weeklyBonusPoints < 0 || weeklyBonusPoints > 1000)) {
+        return c.json({ error: 'weeklyBonusPoints must be between 0 and 1000' }, 400);
+      }
+      
+      const settings = {
+        enabled,
+        dailyBonusPoints: dailyBonusPoints ?? 20,
+        weeklyBonusPoints: weeklyBonusPoints ?? 50,
+        difficultyMultipliers: difficultyMultipliers ?? { easy: 1, medium: 1.5, hard: 2 },
+        updatedAt: new Date().toISOString()
+      };
+      
+      await kv.set(`questsettings:${familyId}`, settings);
+      
+      return c.json(settings);
+    } catch (error) {
+      console.error('Update quest settings error:', error);
+      return c.json({ error: 'Failed to update quest settings' }, 500);
+    }
+  }
+);
+
+// ===== CUSTOM QUESTS =====
+
+// Create custom quest for a family
+app.post(
+  "/make-server-f116e23f/families/:familyId/custom-quests",
+  requireAuth,
+  requireParent,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const { familyId } = c.req.param();
+      const { title, description, type, behaviorIds, targetCount, bonusPoints, difficulty, icon, active } = await c.req.json();
+      
+      // Validation
+      if (!title || !description) {
+        return c.json({ error: 'Title and description are required' }, 400);
+      }
+      
+      if (!['daily', 'weekly'].includes(type)) {
+        return c.json({ error: 'Type must be daily or weekly' }, 400);
+      }
+      
+      if (!behaviorIds || behaviorIds.length === 0) {
+        return c.json({ error: 'At least one behavior must be selected' }, 400);
+      }
+      
+      if (targetCount < 1 || targetCount > 100) {
+        return c.json({ error: 'Target count must be between 1 and 100' }, 400);
+      }
+      
+      if (bonusPoints < 1 || bonusPoints > 1000) {
+        return c.json({ error: 'Bonus points must be between 1 and 1000' }, 400);
+      }
+      
+      if (!['easy', 'medium', 'hard'].includes(difficulty)) {
+        return c.json({ error: 'Difficulty must be easy, medium, or hard' }, 400);
+      }
+      
+      const questId = `customquest:${familyId}:${Date.now()}`;
+      const now = new Date().toISOString();
+      
+      const customQuest = {
+        id: questId,
+        familyId,
+        title,
+        description,
+        type,
+        behaviorIds,
+        targetCount,
+        bonusPoints,
+        difficulty,
+        icon: icon || '🎯',
+        active: active ?? true,
+        createdAt: now,
+        updatedAt: now
+      };
+      
+      await kv.set(questId, customQuest);
+      
+      return c.json(customQuest);
+    } catch (error) {
+      console.error('Create custom quest error:', error);
+      return c.json({ error: 'Failed to create custom quest' }, 500);
+    }
+  }
+);
+
+// Get all custom quests for a family
+app.get(
+  "/make-server-f116e23f/families/:familyId/custom-quests",
+  requireAuth,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const { familyId } = c.req.param();
+      const customQuests = await kv.getByPrefix(`customquest:${familyId}:`);
+      
+      // Sort by createdAt (newest first)
+      const sorted = customQuests.sort((a: any, b: any) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+      
+      return c.json(sorted);
+    } catch (error) {
+      console.error('Get custom quests error:', error);
+      return c.json({ error: 'Failed to get custom quests' }, 500);
+    }
+  }
+);
+
+// Update custom quest
+app.put(
+  "/make-server-f116e23f/families/:familyId/custom-quests/:questId",
+  requireAuth,
+  requireParent,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const { questId } = c.req.param();
+      const { title, description, type, behaviorIds, targetCount, bonusPoints, difficulty, icon, active } = await c.req.json();
+      
+      const existing = await kv.get(questId);
+      if (!existing) {
+        return c.json({ error: 'Custom quest not found' }, 404);
+      }
+      
+      // Validation
+      if (!title || !description) {
+        return c.json({ error: 'Title and description are required' }, 400);
+      }
+      
+      if (!['daily', 'weekly'].includes(type)) {
+        return c.json({ error: 'Type must be daily or weekly' }, 400);
+      }
+      
+      if (!behaviorIds || behaviorIds.length === 0) {
+        return c.json({ error: 'At least one behavior must be selected' }, 400);
+      }
+      
+      if (targetCount < 1 || targetCount > 100) {
+        return c.json({ error: 'Target count must be between 1 and 100' }, 400);
+      }
+      
+      if (bonusPoints < 1 || bonusPoints > 1000) {
+        return c.json({ error: 'Bonus points must be between 1 and 1000' }, 400);
+      }
+      
+      if (!['easy', 'medium', 'hard'].includes(difficulty)) {
+        return c.json({ error: 'Difficulty must be easy, medium, or hard' }, 400);
+      }
+      
+      const updatedQuest = {
+        ...existing,
+        title,
+        description,
+        type,
+        behaviorIds,
+        targetCount,
+        bonusPoints,
+        difficulty,
+        icon: icon || '🎯',
+        active: active ?? true,
+        updatedAt: new Date().toISOString()
+      };
+      
+      await kv.set(questId, updatedQuest);
+      
+      return c.json(updatedQuest);
+    } catch (error) {
+      console.error('Update custom quest error:', error);
+      return c.json({ error: 'Failed to update custom quest' }, 500);
+    }
+  }
+);
+
+// Delete custom quest
+app.delete(
+  "/make-server-f116e23f/families/:familyId/custom-quests/:questId",
+  requireAuth,
+  requireParent,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const { questId } = c.req.param();
+      
+      const existing = await kv.get(questId);
+      if (!existing) {
+        return c.json({ error: 'Custom quest not found' }, 404);
+      }
+      
+      await kv.del(questId);
+      
+      return c.json({ success: true, message: 'Custom quest deleted' });
+    } catch (error) {
+      console.error('Delete custom quest error:', error);
+      return c.json({ error: 'Failed to delete custom quest' }, 500);
+    }
+  }
+);
+
+// Generate challenges from custom quests for a child
+app.post(
+  "/make-server-f116e23f/children/:childId/custom-quests/generate",
+  requireAuth,
+  requireParent,
+  requireChildAccess,
+  async (c) => {
+    try {
+      const { childId } = c.req.param();
+      const { customQuestId } = await c.req.json();
+      
+      // Get the custom quest
+      const customQuest = await kv.get(customQuestId);
+      if (!customQuest) {
+        return c.json({ error: 'Custom quest not found' }, 404);
+      }
+      
+      if (!customQuest.active) {
+        return c.json({ error: 'Custom quest is not active' }, 400);
+      }
+      
+      // Create challenge instance
+      const challengeId = `challenge:${childId}:${Date.now()}:${Math.random().toString(36).substr(2, 9)}`;
+      const now = new Date();
+      
+      const expiresAt = customQuest.type === 'daily'
+        ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59)
+        : new Date(now.getFullYear(), now.getMonth(), now.getDate() + (7 - now.getDay()), 23, 59, 59);
+      
+      const challenge = {
+        id: challengeId,
+        childId,
+        customQuestId: customQuest.id,
+        templateId: `custom:${customQuest.id}`,
+        type: customQuest.type,
+        title: customQuest.title,
+        description: customQuest.description,
+        difficulty: customQuest.difficulty,
+        bonusPoints: customQuest.bonusPoints,
+        status: 'available',
+        createdAt: now.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+        requirements: [{
+          type: 'behavior',
+          behaviorIds: customQuest.behaviorIds,
+          target: customQuest.targetCount
+        }],
+        progress: { current: 0, target: customQuest.targetCount, percentage: 0, isComplete: false },
+        icon: customQuest.icon,
+        category: 'custom'
+      };
+      
+      await kv.set(challengeId, challenge);
+      
+      return c.json({ challenge });
+    } catch (error) {
+      console.error('Generate custom quest challenge error:', error);
+      return c.json({ error: 'Failed to generate challenge from custom quest' }, 500);
+    }
+  }
+);
+
+// Get family users (parents) for displaying names in audit trail
+app.get(
+  "/make-server-f116e23f/families/:familyId/users",
+  requireAuth,
+  requireFamilyAccess,
+  async (c) => {
+    try {
+      const { familyId } = c.req.param();
+      
+      // Get family to find parent IDs
+      const family = await kv.get(`family:${familyId}`);
+      if (!family) {
+        return c.json({ error: 'Family not found' }, 404);
+      }
+      
+      // Get user info for each parent
+      const users = [];
+      for (const parentId of family.parentIds || []) {
+        const userMapping = await kv.get(`user:${parentId}`);
+        if (userMapping) {
+          // Fetch user metadata from Supabase Auth
+          const { data: { user }, error } = await serviceRoleClient.auth.admin.getUserById(parentId);
+          
+          if (user) {
+            users.push({
+              id: user.id,
+              email: user.email,
+              name: userMapping.name || user.user_metadata?.name || user.email?.split('@')[0] || 'Unknown User'
+            });
+          }
+        }
+      }
+      
+      return c.json(users);
+    } catch (error) {
+      console.error('Get family users error:', error);
+      return c.json({ error: 'Failed to get family users' }, 500);
+    }
+  }
+);
+
 // Generate daily challenges for a child
 app.post(
   "/make-server-f116e23f/children/:childId/challenges/generate",
@@ -1721,11 +2759,22 @@ app.post(
     const { childId } = c.req.param();
     const { type } = await c.req.json(); // 'daily' or 'weekly'
     
-    // Get existing challenges for this child
-    const existingChallenges = await kv.getByPrefix(`challenge:${childId}:`);
+    // Get child to find familyId
+    // childId already includes 'child:' prefix from route parameter
+    const child = await kv.get(childId);
+    if (!child) {
+      return c.json({ error: 'Child not found' }, 404);
+    }
     
-    // Filter templates by type
-    const templates = challengeTemplates.filter(t => t.type === type);
+    // Generate dynamic templates based on family's configured behaviors
+    const templates = await generateQuestTemplates(child.familyId, type);
+    
+    if (templates.length === 0) {
+      return c.json({ 
+        error: 'No behaviors configured yet', 
+        message: 'Please configure salah and behaviors first to generate quests' 
+      }, 400);
+    }
     
     // Randomly select 2-3 challenges
     const selectedTemplates = [];
@@ -1771,6 +2820,7 @@ app.post(
     
     return c.json({ challenges: newChallenges, count: newChallenges.length });
   } catch (error) {
+    console.error('Generate challenges error:', error);
     return c.json({ error: 'Failed to generate challenges' }, 500);
   }
 });
@@ -1806,6 +2856,56 @@ app.get(
     return c.json(sorted);
   } catch (error) {
     return c.json({ error: 'Failed to get challenges' }, 500);
+  }
+});
+
+// Get sample quests for empty state preview (based on actual configured behaviors)
+app.get(
+  "/make-server-f116e23f/children/:childId/challenges/samples",
+  requireAuth,
+  requireChildAccess,
+  async (c) => {
+  try {
+    const { childId } = c.req.param();
+    
+    // Get child to find familyId
+    const child = await kv.get(`child:${childId}`);
+    if (!child) {
+      return c.json({ error: 'Child not found' }, 404);
+    }
+    
+    // Generate sample templates (2 samples - 1 daily, 1 weekly)
+    const dailyTemplates = await generateQuestTemplates(child.familyId, 'daily');
+    const weeklyTemplates = await generateQuestTemplates(child.familyId, 'weekly');
+    
+    const samples = [];
+    
+    // Pick one daily sample (prefer salah if available)
+    if (dailyTemplates.length > 0) {
+      const salahDaily = dailyTemplates.find(t => t.category === 'salah');
+      samples.push(salahDaily || dailyTemplates[0]);
+    }
+    
+    // Pick one weekly sample (prefer behavior if available)
+    if (weeklyTemplates.length > 0) {
+      const behaviorWeekly = weeklyTemplates.find(t => t.category === 'behavior');
+      samples.push(behaviorWeekly || weeklyTemplates[0]);
+    }
+    
+    // Add example progress for preview
+    const samplesWithProgress = samples.map(template => ({
+      ...template,
+      progress: {
+        current: template.type === 'daily' ? Math.floor(template.requirements[0].target * 0.6) : Math.floor(template.requirements[0].target * 0.4),
+        target: template.requirements[0].target,
+        percentage: template.type === 'daily' ? 60 : 40
+      }
+    }));
+    
+    return c.json(samplesWithProgress);
+  } catch (error) {
+    console.error('Get sample challenges error:', error);
+    return c.json({ error: 'Failed to get sample challenges' }, 500);
   }
 });
 
@@ -2062,7 +3162,26 @@ app.get(
   async (c) => {
   try {
     const milestones = await kv.getByPrefix('milestone:');
-    return c.json(milestones.sort((a: any, b: any) => a.points - b.points));
+    
+    // Deduplicate by points (keep oldest based on timestamp in ID)
+    const milestonesByPoints = new Map<number, any>();
+    for (const milestone of milestones) {
+      const existing = milestonesByPoints.get(milestone.points);
+      if (!existing) {
+        milestonesByPoints.set(milestone.points, milestone);
+      } else {
+        // Keep the one with the older ID (lower timestamp)
+        const existingTimestamp = parseInt(existing.id.split(':')[1] || '0');
+        const currentTimestamp = parseInt(milestone.id.split(':')[1] || '0');
+        if (currentTimestamp < existingTimestamp) {
+          milestonesByPoints.set(milestone.points, milestone);
+        }
+      }
+    }
+    
+    // Return deduplicated milestones sorted by points
+    const deduplicatedMilestones = Array.from(milestonesByPoints.values());
+    return c.json(deduplicatedMilestones.sort((a: any, b: any) => a.points - b.points));
   } catch (error) {
     return c.json({ error: 'Failed to get milestones' }, 500);
   }
@@ -2138,6 +3257,315 @@ app.delete(
     } catch (error) {
       console.error('Delete reward error:', error);
       return c.json({ error: 'Failed to delete reward' }, 500);
+    }
+  }
+);
+
+// ===== PRAYER LOGGING =====
+
+// Get prayer configuration (prayer names and times)
+app.get(
+  "/make-server-f116e23f/prayers/config",
+  requireAuth,
+  async (c) => {
+    try {
+      return c.json({
+        prayers: PRAYER_NAMES,
+        times: PRAYER_TIMES
+      });
+    } catch (error) {
+      console.error('Get prayer config error:', error);
+      return c.json({ error: 'Failed to fetch prayer config' }, 500);
+    }
+  }
+);
+
+// Create prayer claim (Kid initiates)
+app.post(
+  "/make-server-f116e23f/prayer-claims",
+  requireAuth,
+  async (c) => {
+    try {
+      const body = await c.req.json();
+      const { childId, prayerName, points = 5, backdateDate } = body;
+
+      if (!childId || !prayerName) {
+        return c.json({ error: 'childId and prayerName are required' }, 400);
+      }
+
+      // Verify child access (kid session or parent)
+      const userId = getAuthUserId(c);
+      
+      // Check if it's a kid session
+      const sessionToken = c.req.header('Authorization')?.split(' ')[1];
+      if (sessionToken) {
+        const session = await verifyKidSession(sessionToken);
+        if (session && session.childId !== childId) {
+          return c.json({ error: 'Cannot create claim for another child' }, 403);
+        }
+      } else {
+        // If not kid session, verify parent has access to this child
+        const child = await kv.get(`child:${childId}`);
+        if (!child) {
+          return c.json({ error: 'Child not found' }, 404);
+        }
+
+        const user = await kv.get(`user:${userId}`);
+        if (!user || user.familyId !== child.familyId) {
+          return c.json({ error: 'No access to this child' }, 403);
+        }
+      }
+
+      // Get family timezone
+      const child = await kv.get(`child:${childId}`);
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+      
+      const family = child.familyId ? await kv.get(child.familyId) : null;
+      const timezone = family?.timezone || 'UTC';
+
+      const claim = await createPrayerClaim(childId, prayerName, points, timezone, backdateDate);
+      
+      return c.json(claim, 201);
+    } catch (error: any) {
+      console.error('Create prayer claim error:', error);
+      return c.json({ error: error.message || 'Failed to create prayer claim' }, 400);
+    }
+  }
+);
+
+// Get claims for a child
+app.get(
+  "/make-server-f116e23f/prayer-claims/child/:childId",
+  requireAuth,
+  async (c) => {
+    try {
+      const { childId } = c.req.param();
+      const status = c.req.query('status') as 'pending' | 'approved' | 'denied' | undefined;
+      const limit = parseInt(c.req.query('limit') || '50');
+
+      // Verify access
+      const userId = getAuthUserId(c);
+      const child = await kv.get(`child:${childId}`);
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+
+      // Check if it's a kid session
+      const sessionToken = c.req.header('Authorization')?.split(' ')[1];
+      if (sessionToken) {
+        const session = await verifyKidSession(sessionToken);
+        if (session && session.childId !== childId) {
+          return c.json({ error: 'Cannot access claims for another child' }, 403);
+        }
+      } else {
+        // Verify parent has access
+        const user = await kv.get(`user:${userId}`);
+        if (!user || user.familyId !== child.familyId) {
+          return c.json({ error: 'No access to this child' }, 403);
+        }
+      }
+
+      const claims = await getChildClaims(childId, status, limit);
+      
+      return c.json(claims);
+    } catch (error) {
+      console.error('Get child claims error:', error);
+      return c.json({ error: 'Failed to fetch claims' }, 500);
+    }
+  }
+);
+
+// Get claims for a specific date
+app.get(
+  "/make-server-f116e23f/prayer-claims/child/:childId/date/:date",
+  requireAuth,
+  async (c) => {
+    try {
+      const { childId, date } = c.req.param();
+
+      // Verify access
+      const userId = getAuthUserId(c);
+      const child = await kv.get(`child:${childId}`);
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+
+      const sessionToken = c.req.header('Authorization')?.split(' ')[1];
+      if (sessionToken) {
+        const session = await verifyKidSession(sessionToken);
+        if (session && session.childId !== childId) {
+          return c.json({ error: 'Cannot access claims for another child' }, 403);
+        }
+      } else {
+        const user = await kv.get(`user:${userId}`);
+        if (!user || user.familyId !== child.familyId) {
+          return c.json({ error: 'No access to this child' }, 403);
+        }
+      }
+
+      const claims = await getClaimsForDate(childId, date);
+      
+      return c.json(claims);
+    } catch (error) {
+      console.error('Get claims for date error:', error);
+      return c.json({ error: 'Failed to fetch claims' }, 500);
+    }
+  }
+);
+
+// Get pending claims for family (Parent dashboard)
+app.get(
+  "/make-server-f116e23f/prayer-claims/family/pending",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const userId = getAuthUserId(c);
+      const user = await kv.get(`user:${userId}`);
+      
+      if (!user || !user.familyId) {
+        return c.json({ error: 'User has no family' }, 400);
+      }
+
+      const claims = await getPendingClaimsForFamily(user.familyId);
+      
+      // Enrich claims with child names
+      const enrichedClaims = await Promise.all(
+        claims.map(async (claim) => {
+          const child = await kv.get(`child:${claim.childId}`);
+          return {
+            ...claim,
+            childName: child?.name || 'Unknown'
+          };
+        })
+      );
+      
+      return c.json(enrichedClaims);
+    } catch (error) {
+      console.error('Get pending claims error:', error);
+      return c.json({ error: 'Failed to fetch pending claims' }, 500);
+    }
+  }
+);
+
+// Approve prayer claim (Parent action)
+app.post(
+  "/make-server-f116e23f/prayer-claims/:claimId/approve",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const { claimId } = c.req.param();
+      const userId = getAuthUserId(c);
+
+      // Verify claim exists and belongs to user's family
+      const claim = await kv.get(`prayer-claim:${claimId}`);
+      if (!claim) {
+        return c.json({ error: 'Claim not found' }, 404);
+      }
+
+      const child = await kv.get(`child:${claim.childId}`);
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+
+      const user = await kv.get(`user:${userId}`);
+      if (!user || user.familyId !== child.familyId) {
+        return c.json({ error: 'No access to this claim' }, 403);
+      }
+
+      const result = await approvePrayerClaim(claimId, userId);
+      
+      return c.json({
+        success: true,
+        claim: result.claim,
+        pointEvent: result.pointEvent
+      });
+    } catch (error: any) {
+      console.error('Approve claim error:', error);
+      return c.json({ error: error.message || 'Failed to approve claim' }, 400);
+    }
+  }
+);
+
+// Deny prayer claim (Parent action)
+app.post(
+  "/make-server-f116e23f/prayer-claims/:claimId/deny",
+  requireAuth,
+  requireParent,
+  async (c) => {
+    try {
+      const { claimId } = c.req.param();
+      const userId = getAuthUserId(c);
+      const body = await c.req.json();
+      const { reason } = body;
+
+      // Verify claim exists and belongs to user's family
+      const claim = await kv.get(`prayer-claim:${claimId}`);
+      if (!claim) {
+        return c.json({ error: 'Claim not found' }, 404);
+      }
+
+      const child = await kv.get(`child:${claim.childId}`);
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+
+      const user = await kv.get(`user:${userId}`);
+      if (!user || user.familyId !== child.familyId) {
+        return c.json({ error: 'No access to this claim' }, 403);
+      }
+
+      const updatedClaim = await denyPrayerClaim(claimId, userId, reason);
+      
+      return c.json({
+        success: true,
+        claim: updatedClaim
+      });
+    } catch (error: any) {
+      console.error('Deny claim error:', error);
+      return c.json({ error: error.message || 'Failed to deny claim' }, 400);
+    }
+  }
+);
+
+// Get prayer statistics for a child
+app.get(
+  "/make-server-f116e23f/prayer-claims/child/:childId/stats",
+  requireAuth,
+  async (c) => {
+    try {
+      const { childId } = c.req.param();
+      const days = parseInt(c.req.query('days') || '7');
+
+      // Verify access
+      const userId = getAuthUserId(c);
+      const child = await kv.get(`child:${childId}`);
+      if (!child) {
+        return c.json({ error: 'Child not found' }, 404);
+      }
+
+      const sessionToken = c.req.header('Authorization')?.split(' ')[1];
+      if (sessionToken) {
+        const session = await verifyKidSession(sessionToken);
+        if (session && session.childId !== childId) {
+          return c.json({ error: 'Cannot access stats for another child' }, 403);
+        }
+      } else {
+        const user = await kv.get(`user:${userId}`);
+        if (!user || user.familyId !== child.familyId) {
+          return c.json({ error: 'No access to this child' }, 403);
+        }
+      }
+
+      const stats = await getPrayerStats(childId, days);
+      
+      return c.json(stats);
+    } catch (error) {
+      console.error('Get prayer stats error:', error);
+      return c.json({ error: 'Failed to fetch stats' }, 500);
     }
   }
 );
@@ -3001,6 +4429,23 @@ app.post(
       
       await kv.set(id, redemptionRequest);
       
+      // Notify parents about new reward claim (non-blocking)
+      try {
+        await notifyFamilyParents(child.familyId, {
+          title: '🎁 Reward Claimed',
+          body: `${child.name} wants to claim: ${reward.name}`,
+          data: {
+            type: 'reward_claim',
+            childId: child.id,
+            itemId: id,
+            route: '/redemption-requests'
+          }
+        });
+      } catch (notifyError) {
+        // Non-blocking - don't fail redemption if notification fails
+        console.error('Failed to send redemption notification:', notifyError);
+      }
+      
       return c.json({ success: true, redemptionRequest });
     } catch (error) {
       console.error('Failed to create redemption request:', error);
@@ -3193,6 +4638,226 @@ app.post(
     } catch (error) {
       console.error('Failed to mark redemption as delivered:', error);
       return c.json({ error: 'Failed to mark as delivered' }, 500);
+    }
+  }
+);
+
+// ===== KV STORE ENDPOINTS (FOR TESTING) =====
+
+// Get value by key
+app.post(
+  "/make-server-f116e23f/kv/get",
+  async (c) => {
+    try {
+      const { key } = await c.req.json();
+      
+      if (!key || typeof key !== 'string') {
+        return c.json({ error: 'Invalid key' }, 400);
+      }
+      
+      const value = await kv.get(key);
+      return c.json(value);
+    } catch (error) {
+      console.error('KV get error:', error);
+      return c.json({ error: 'Failed to get value' }, 500);
+    }
+  }
+);
+
+// Get values by prefix
+app.post(
+  "/make-server-f116e23f/kv/getByPrefix",
+  async (c) => {
+    try {
+      const { prefix } = await c.req.json();
+      
+      if (!prefix || typeof prefix !== 'string') {
+        return c.json({ error: 'Invalid prefix' }, 400);
+      }
+      
+      const values = await kv.getByPrefix(prefix);
+      return c.json(values);
+    } catch (error) {
+      console.error('KV getByPrefix error:', error);
+      return c.json({ error: 'Failed to get values by prefix' }, 500);
+    }
+  }
+);
+
+// Set value
+app.post(
+  "/make-server-f116e23f/kv/set",
+  async (c) => {
+    try {
+      const { key, value } = await c.req.json();
+      
+      if (!key || typeof key !== 'string') {
+        return c.json({ error: 'Invalid key' }, 400);
+      }
+      
+      await kv.set(key, value);
+      return c.json({ success: true });
+    } catch (error) {
+      console.error('KV set error:', error);
+      return c.json({ error: 'Failed to set value' }, 500);
+    }
+  }
+);
+
+// Delete value
+app.post(
+  "/make-server-f116e23f/kv/del",
+  async (c) => {
+    try {
+      const { key } = await c.req.json();
+      
+      if (!key || typeof key !== 'string') {
+        return c.json({ error: 'Invalid key' }, 400);
+      }
+      
+      await kv.del(key);
+      return c.json({ success: true });
+    } catch (error) {
+      console.error('KV del error:', error);
+      return c.json({ error: 'Failed to delete value' }, 500);
+    }
+  }
+);
+
+// ===== PUSH NOTIFICATIONS =====
+
+// Register device push token
+app.post(
+  "/make-server-f116e23f/notifications/register-token",
+  requireAuth,
+  async (c) => {
+    try {
+      const userId = getAuthUserId(c);
+      const { token } = await c.req.json();
+
+      if (!token || typeof token !== 'string') {
+        return c.json({ error: 'Valid token required' }, 400);
+      }
+
+      // Store token in KV (one token per user)
+      await kv.set(`pushtoken:${userId}`, {
+        userId,
+        token,
+        platform: 'ios', // Could detect Android vs iOS
+        registeredAt: new Date().toISOString(),
+        lastUsed: new Date().toISOString()
+      });
+
+      console.log(`✅ Push token registered for user ${userId}`);
+
+      return c.json({ success: true });
+    } catch (error: any) {
+      console.error('Register push token error:', error);
+      return c.json({ error: error.message || 'Failed to register token' }, 500);
+    }
+  }
+);
+
+// Send push notification (internal endpoint)
+app.post(
+  "/make-server-f116e23f/notifications/send",
+  requireAuth,
+  async (c) => {
+    try {
+      const { userId, title, body, data } = await c.req.json();
+
+      if (!userId || !title || !body) {
+        return c.json({ error: 'userId, title, and body required' }, 400);
+      }
+
+      // Get user's push token
+      const tokenData = await kv.get(`pushtoken:${userId}`);
+      
+      if (!tokenData || !tokenData.token) {
+        console.log(`⚠️ No push token found for user ${userId}`);
+        return c.json({ error: 'User has no registered push token' }, 404);
+      }
+
+      // TODO: In production, integrate with FCM/APNS to actually send notification
+      // For now, just log that we would send it
+      console.log('📬 Would send push notification:', {
+        to: tokenData.token,
+        title,
+        body,
+        data
+      });
+
+      // NOTE: To actually send notifications, you need to:
+      // 1. Set up Firebase Cloud Messaging (FCM) project
+      // 2. Get FCM server key
+      // 3. Make HTTP request to FCM API:
+      //
+      // const fcmResponse = await fetch('https://fcm.googleapis.com/fcm/send', {
+      //   method: 'POST',
+      //   headers: {
+      //     'Content-Type': 'application/json',
+      //     'Authorization': `key=${FCM_SERVER_KEY}`
+      //   },
+      //   body: JSON.stringify({
+      //     to: tokenData.token,
+      //     notification: { title, body },
+      //     data: data || {}
+      //   })
+      // });
+
+      // Update last used timestamp
+      tokenData.lastUsed = new Date().toISOString();
+      await kv.set(`pushtoken:${userId}`, tokenData);
+
+      return c.json({ 
+        success: true, 
+        message: 'Notification queued (FCM integration needed for production)'
+      });
+    } catch (error: any) {
+      console.error('Send push notification error:', error);
+      return c.json({ error: error.message || 'Failed to send notification' }, 500);
+    }
+  }
+);
+
+// Get user's push notification status
+app.get(
+  "/make-server-f116e23f/notifications/status",
+  requireAuth,
+  async (c) => {
+    try {
+      const userId = getAuthUserId(c);
+      
+      const tokenData = await kv.get(`pushtoken:${userId}`);
+      
+      return c.json({
+        registered: !!tokenData,
+        registeredAt: tokenData?.registeredAt || null,
+        lastUsed: tokenData?.lastUsed || null
+      });
+    } catch (error: any) {
+      console.error('Get notification status error:', error);
+      return c.json({ error: error.message || 'Failed to get status' }, 500);
+    }
+  }
+);
+
+// Unregister push token (when user logs out or disables notifications)
+app.delete(
+  "/make-server-f116e23f/notifications/unregister-token",
+  requireAuth,
+  async (c) => {
+    try {
+      const userId = getAuthUserId(c);
+      
+      await kv.del(`pushtoken:${userId}`);
+      
+      console.log(`✅ Push token unregistered for user ${userId}`);
+      
+      return c.json({ success: true });
+    } catch (error: any) {
+      console.error('Unregister push token error:', error);
+      return c.json({ error: error.message || 'Failed to unregister token' }, 500);
     }
   }
 );

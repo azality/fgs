@@ -18,7 +18,7 @@ interface AttendanceRecord {
   childId: string;
   providerId: string;
   classDate: string;
-  attended: boolean;
+  status: 'present' | 'absent' | 'excused' | 'late';
   loggedBy: string;
 }
 
@@ -80,10 +80,10 @@ export function generateMonthlyStatement(data: StatementData) {
   doc.text('📊 Monthly Summary', 20, currentY + 10);
   
   const totalRecords = data.attendanceRecords.length;
-  const totalAttended = data.attendanceRecords.filter(r => r.attended).length;
+  const totalAttended = data.attendanceRecords.filter(r => r.status === 'present').length;
   const totalMissed = totalRecords - totalAttended;
   const totalCost = data.attendanceRecords.reduce((sum, record) => {
-    if (record.attended) {
+    if (record.status === 'present') {
       const provider = data.providers.find(p => p.id === record.providerId);
       return sum + (provider?.ratePerClass || 0);
     }
@@ -116,7 +116,7 @@ export function generateMonthlyStatement(data: StatementData) {
     
     if (providerRecords.length === 0) return;
     
-    const attended = providerRecords.filter(r => r.attended).length;
+    const attended = providerRecords.filter(r => r.status === 'present').length;
     const missed = providerRecords.length - attended;
     const cost = attended * provider.ratePerClass;
     
@@ -155,13 +155,18 @@ export function generateMonthlyStatement(data: StatementData) {
     
     // Attendance table
     const tableData = providerRecords.map(record => [
-      new Date(record.classDate).toLocaleDateString('en-US', { 
-        weekday: 'short', 
-        month: 'short', 
-        day: 'numeric' 
-      }),
-      record.attended ? '✓ Attended' : '✗ Missed',
-      record.attended ? `$${provider.ratePerClass.toFixed(2)}` : '$0.00'
+      (() => {
+        // Parse date string without timezone conversion
+        const [year, month, day] = record.classDate.split('-').map(Number);
+        const date = new Date(year, month - 1, day);
+        return date.toLocaleDateString('en-US', { 
+          weekday: 'short', 
+          month: 'short', 
+          day: 'numeric' 
+        });
+      })(),
+      record.status === 'present' ? '✓ Attended' : '✗ Missed',
+      record.status === 'present' ? `$${provider.ratePerClass.toFixed(2)}` : '$0.00'
     ]);
     
     // Add summary row
@@ -287,7 +292,7 @@ export function generateActivityStatement(
   doc.text(`Schedule: ${provider.dayOfWeek?.join(', ') || 'N/A'} @ ${provider.time || 'N/A'}`, 14, 74);
   doc.text(`Rate: $${provider.ratePerClass} per class`, 14, 82);
   
-  const attended = attendanceRecords.filter(r => r.attended).length;
+  const attended = attendanceRecords.filter(r => r.status === 'present').length;
   const total = attendanceRecords.length;
   const cost = attended * provider.ratePerClass;
   
@@ -299,8 +304,8 @@ export function generateActivityStatement(
       day: 'numeric',
       year: 'numeric'
     }),
-    record.attended ? '✓ Present' : '✗ Absent',
-    record.attended ? `$${provider.ratePerClass.toFixed(2)}` : '-'
+    record.status === 'present' ? '✓ Present' : '✗ Absent',
+    record.status === 'present' ? `$${provider.ratePerClass.toFixed(2)}` : '-'
   ]);
   
   autoTable(doc, {

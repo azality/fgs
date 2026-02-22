@@ -13,7 +13,7 @@ import { RewardRequestCard } from "../components/kid-mode/RewardRequestCard";
 import { Confetti } from "../components/effects/Confetti";
 import { FloatingActionButton } from "../components/mobile/FloatingActionButton";
 import { useState, useEffect } from "react";
-import { Flame, Award, Heart, UserCog, Gift, Sparkles } from "lucide-react";
+import { Flame, Award, Heart, UserCog, Gift, Sparkles, TrendingUp, TrendingDown, Clock } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Button } from "../components/ui/button";
 import { useAuth } from "../contexts/AuthContext";
@@ -35,15 +35,23 @@ export function KidDashboard() {
   // DEBUG: Log what we're getting
   console.log('🎮 KidDashboard render:', {
     hasChild: !!child,
-    childName: child?.name,
     childId: child?.id,
-    familyId,
-    hasAccessToken: !!accessToken,
+    childName: child?.name,
     trackableItemsCount: trackableItems.length,
     milestonesCount: milestones.length,
     rewardsCount: rewards.length,
     challengesCount: challenges.length,
-    pointEventsCount: pointEvents.length
+    hasAccessToken: !!accessToken
+  });
+  
+  // DEBUG: Check localStorage and FamilyContext state
+  console.log('🔍 KidDashboard localStorage check:', {
+    kid_id: localStorage.getItem('kid_id'),
+    child_id: localStorage.getItem('child_id'),
+    user_role: localStorage.getItem('user_role'),
+    user_mode: localStorage.getItem('user_mode'),
+    family_id: localStorage.getItem('fgs_family_id'),
+    session_token: localStorage.getItem('kid_session_token')?.substring(0, 20) + '...'
   });
 
   // Track pending redemption requests
@@ -289,7 +297,7 @@ export function KidDashboard() {
           className="grid grid-cols-2 gap-4 md:grid-cols-4"
         >
           <button
-            onClick={() => navigate("/titles-badges")}
+            onClick={() => navigate('/titles-badges')}
             className="bg-gradient-to-br from-[var(--kid-warm-gold)] to-[var(--kid-lantern-glow)] rounded-[1rem] p-4 text-white shadow-lg hover:shadow-xl transition-all hover:scale-105"
           >
             <Award className="w-8 h-8 mx-auto mb-2" />
@@ -297,7 +305,7 @@ export function KidDashboard() {
           </button>
 
           <button
-            onClick={() => navigate("/sadqa")}
+            onClick={() => navigate('/sadqa')}
             className="bg-gradient-to-br from-green-500 to-green-700 rounded-[1rem] p-4 text-white shadow-lg hover:shadow-xl transition-all hover:scale-105"
           >
             <Heart className="w-8 h-8 mx-auto mb-2 fill-white" />
@@ -305,7 +313,7 @@ export function KidDashboard() {
           </button>
 
           <button
-            onClick={() => navigate("/challenges")}
+            onClick={() => navigate('/challenges')}
             className="bg-gradient-to-br from-purple-500 to-purple-700 rounded-[1rem] p-4 text-white shadow-lg hover:shadow-xl transition-all hover:scale-105"
           >
             <span className="text-3xl block mb-1">⚔️</span>
@@ -313,11 +321,19 @@ export function KidDashboard() {
           </button>
 
           <button
-            onClick={() => navigate("/rewards")}
+            onClick={() => navigate('/kid/prayers')}
             className="bg-gradient-to-br from-blue-500 to-blue-700 rounded-[1rem] p-4 text-white shadow-lg hover:shadow-xl transition-all hover:scale-105"
           >
-            <span className="text-3xl block mb-1">🎁</span>
-            <p className="text-sm font-semibold">Rewards</p>
+            <span className="text-3xl block mb-1">🕌</span>
+            <p className="text-sm font-semibold">Prayers</p>
+          </button>
+
+          <button
+            onClick={() => navigate('/kid/wishlist')}
+            className="bg-gradient-to-br from-[var(--kid-warm-gold)] to-[var(--kid-lantern-glow)] rounded-[1rem] p-4 text-white shadow-lg hover:shadow-xl transition-all hover:scale-105"
+          >
+            <Gift className="w-8 h-8 mx-auto mb-2" />
+            <p className="text-sm font-semibold">My Wishlist</p>
           </button>
         </motion.div>
 
@@ -404,6 +420,72 @@ export function KidDashboard() {
                 <QuestCard key={quest.id} {...quest} />
               ))}
             </div>
+          </motion.div>
+        )}
+
+        {/* Recent Activity Log - How did I earn points? */}
+        {childEvents.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.48 }}
+            className="bg-white rounded-[1.5rem] p-6 shadow-lg"
+          >
+            <h2 className="text-2xl font-bold text-[var(--kid-midnight-blue)] mb-4 flex items-center gap-2">
+              <Clock className="w-6 h-6 text-blue-500" />
+              How You Earned Points 📊
+            </h2>
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {childEvents
+                .slice(0, 15) // Show last 15 events
+                .reverse() // Most recent first
+                .map((event, index) => {
+                  const item = trackableItems.find(i => i.id === event.trackableItemId);
+                  const isPositive = event.points > 0;
+                  const timeAgo = getTimeAgo(event.timestamp);
+                  
+                  return (
+                    <motion.div
+                      key={event.id}
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: index * 0.02 }}
+                      className={`flex items-center justify-between p-3 rounded-xl border-2 ${
+                        isPositive
+                          ? 'bg-green-50 border-green-200'
+                          : 'bg-red-50 border-red-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        {isPositive ? (
+                          <TrendingUp className="w-5 h-5 text-green-600" />
+                        ) : (
+                          <TrendingDown className="w-5 h-5 text-red-600" />
+                        )}
+                        <div>
+                          <p className="font-semibold text-gray-800">
+                            {item?.name || 'Activity'}
+                          </p>
+                          <p className="text-xs text-gray-500">{timeAgo}</p>
+                          {event.notes && (
+                            <p className="text-xs text-gray-600 italic mt-1">"{event.notes}"</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className={`text-lg font-bold ${
+                        isPositive ? 'text-green-600' : 'text-red-600'
+                      }`}>
+                        {isPositive ? '+' : ''}{event.points}
+                      </div>
+                    </motion.div>
+                  );
+                })}
+            </div>
+            {childEvents.length === 0 && (
+              <p className="text-center text-gray-500 py-8">
+                No activity yet. Start your journey! 🌟
+              </p>
+            )}
           </motion.div>
         )}
 
@@ -559,4 +641,24 @@ function getChallengeIcon(type: string): string {
   if (type === 'daily') return "⚔️";
   if (type === 'weekly') return "🏆";
   return "⭐";
+}
+
+function getTimeAgo(timestamp: string): string {
+  const now = new Date();
+  const eventTime = new Date(timestamp);
+  const diff = now.getTime() - eventTime.getTime();
+  const seconds = Math.floor(diff / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) {
+    return `${days} day${days > 1 ? 's' : ''} ago`;
+  } else if (hours > 0) {
+    return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+  } else if (minutes > 0) {
+    return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
+  } else {
+    return `${seconds} second${seconds > 1 ? 's' : ''} ago`;
+  }
 }

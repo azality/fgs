@@ -11,6 +11,7 @@ import {
 } from '../../utils/api';
 import { AuthContext } from './AuthContext';
 import { getCurrentRole } from '../utils/authHelpers';
+import { supabase } from '../../../utils/supabase/client';
 
 interface Family {
   id: string;
@@ -18,6 +19,7 @@ interface Family {
   parentIds: string[];
   inviteCode?: string;
   createdAt: string;
+  timezone?: string; // IANA timezone (e.g., 'America/Toronto', 'Asia/Dubai')
 }
 
 interface FamilyContextType {
@@ -72,7 +74,9 @@ export function FamilyProvider({ children: reactChildren }: { children: ReactNod
 
   const [familyId, setFamilyIdState] = useState<string | null>(() => {
     // Try to load from localStorage
-    return localStorage.getItem('fgs_family_id');
+    const storedFamilyId = localStorage.getItem('fgs_family_id');
+    console.log('🔍 FamilyContext: Initial familyId from localStorage:', storedFamilyId);
+    return storedFamilyId;
   });
   
   const [family, setFamily] = useState<Family | null>(null);
@@ -108,6 +112,41 @@ export function FamilyProvider({ children: reactChildren }: { children: ReactNod
     console.log('✅ Child/unknown mode - initialized selectedChildId to null');
     return null;
   });
+  
+  // CRITICAL: Watch for kid login and auto-select the kid
+  // This useEffect is triggered when accessToken changes (e.g., when kid logs in)
+  // It ensures familyId and selectedChildId are properly set from localStorage
+  useEffect(() => {
+    const currentRole = getCurrentRole();
+    
+    if (currentRole === 'child') {
+      const kidId = localStorage.getItem('kid_id') || localStorage.getItem('child_id');
+      
+      if (kidId && kidId !== selectedChildId) {
+        console.log('👶 Kid logged in, auto-selecting child:', kidId);
+        setSelectedChildIdState(kidId);
+      }
+      
+      // CRITICAL: Also load family ID when kid logs in
+      // This is necessary because familyId state is initialized only once at mount,
+      // but kid login happens after mount, so we need to update it here
+      const storedFamilyId = localStorage.getItem('fgs_family_id');
+      if (storedFamilyId && storedFamilyId !== familyId) {
+        console.log('👶 Kid logged in, loading family ID from localStorage:', storedFamilyId);
+        setFamilyIdState(storedFamilyId);
+        // Note: Setting familyId will trigger the other useEffect to call loadFamilyData
+      } else if (!storedFamilyId) {
+        console.error('❌ CRITICAL: Kid logged in but fgs_family_id is missing from localStorage!');
+        console.error('This will prevent FamilyContext from loading children data.');
+        console.error('Verify that setKidMode() is setting fgs_family_id correctly.');
+      }
+    } else if (currentRole === 'parent') {
+      // Switched to parent mode - clear selection
+      console.log('👨‍👩‍👧‍👦 Switched to parent mode, clearing selectedChildId');
+      setSelectedChildIdState(null);
+    }
+  }, [accessToken]); // Only depend on accessToken to avoid loops
+  
   const [children, setChildren] = useState<Child[]>([]);
   const [pointEvents, setPointEvents] = useState<PointEvent[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
@@ -118,7 +157,7 @@ export function FamilyProvider({ children: reactChildren }: { children: ReactNod
     console.log('FamilyContext - Setting selectedChildId:', id);
     setSelectedChildIdState(id);
     
-    // Update localStorage to track explicit parent selections
+    // ✅ SEL-003: Update localStorage for persistence
     if (id) {
       localStorage.setItem('fgs_selected_child_id', id);
     } else {
@@ -126,32 +165,44 @@ export function FamilyProvider({ children: reactChildren }: { children: ReactNod
     }
   };
 
-  // Clear selected child when role changes to parent
+  // ✅ SEL-003: Restore selection from localStorage on mount (parent mode only)
+  useEffect(() => {
+    const currentRole = getCurrentRole();
+    if (currentRole === 'parent' && !selectedChildId && children.length > 0) {
+      const storedChildId = localStorage.getItem('fgs_selected_child_id');
+      if (storedChildId) {
+        // Verify the child still exists
+        const childExists = children.some(c => c.id === storedChildId);
+        if (childExists) {
+          console.log('✅ SEL-003: Restored child selection from localStorage:', storedChildId);
+          setSelectedChildIdState(storedChildId);
+        } else {
+          console.log('⚠️ SEL-003: Stored child no longer exists, clearing localStorage');
+          localStorage.removeItem('fgs_selected_child_id');
+        }
+      }
+    }
+  }, [children, selectedChildId]);
+
+  // ✅ SEL-004: Handle 1→2+ children transition
   useEffect(() => {
     const currentRole = getCurrentRole();
     if (currentRole === 'parent') {
-      console.log('🔄 Parent mode detected - clearing selected child');
-      setSelectedChildIdState(null);
-      // Also clear from localStorage
-      localStorage.removeItem('fgs_selected_child_id');
+      // If we had 1 child auto-selected, and now have 2+, keep the selection
+      if (children.length >= 2 && selectedChildId) {
+        // Verify current selection is still valid
+        const childExists = children.some(c => c.id === selectedChildId);
+        if (childExists) {
+          console.log('✅ SEL-004: Keeping selection after 1→2+ transition:', selectedChildId);
+          // Keep the current selection
+        } else {
+          console.log('⚠️ SEL-004: Current selection invalid, clearing');
+          setSelectedChildIdState(null);
+          localStorage.removeItem('fgs_selected_child_id');
+        }
+      }
     }
-  }, [accessToken]); // Re-run when token changes (i.e., after login)
-  
-  // CRITICAL: Force-clear selectedChildId on mount if parent mode
-  useEffect(() => {
-    const currentRole = getCurrentRole();
-    console.log('🔍 FamilyContext mount check:', {
-      currentRole,
-      selectedChildId,
-      willClear: currentRole === 'parent' && selectedChildId !== null
-    });
-    
-    if (currentRole === 'parent' && selectedChildId !== null) {
-      console.log('🚨 Force-clearing selectedChildId on mount (parent mode)');
-      setSelectedChildIdState(null);
-      localStorage.removeItem('fgs_selected_child_id');
-    }
-  }, []); // Run once on mount
+  }, [children.length, selectedChildId]);
 
   // Load family data from API
   const loadFamilyData = useCallback(async () => {
@@ -162,18 +213,62 @@ export function FamilyProvider({ children: reactChildren }: { children: ReactNod
     });
     
     if (!familyId) {
-      console.warn('⚠️ Cannot load family data - familyId is missing');
+      console.log('ℹ️ Skipping family data load - no familyId set yet');
       return;
     }
     
     // Don't try to load data if we don't have an access token
     if (!accessToken) {
-      console.warn('⚠️ Cannot load family data - no access token');
+      console.log('ℹ️ Skipping family data load - no access token (user not logged in yet)');
       return;
     }
 
     setLoading(true);
     try {
+      // CRITICAL FIX: Refresh session before making API calls to avoid stale tokens
+      console.log('🔄 Refreshing session before loading family data...');
+      const { data: { session: refreshedSession }, error: refreshError } = await supabase.auth.getSession();
+      
+      if (refreshError || !refreshedSession?.access_token) {
+        console.error('❌ Session refresh failed:', refreshError);
+        
+        // Check if user account was deleted
+        if (refreshError?.message?.includes('user_not_found') || 
+            refreshError?.message?.includes('User from sub claim in JWT does not exist')) {
+          console.error('🚨 CRITICAL: User account deleted but session still exists!');
+          console.log('🔄 Auto-clearing invalid session...');
+          
+          // Clear all session data
+          await supabase.auth.signOut();
+          localStorage.removeItem('user_role');
+          localStorage.removeItem('user_mode');
+          localStorage.removeItem('fgs_family_id');
+          localStorage.removeItem('fgs_selected_child_id');
+          localStorage.removeItem('kid_access_token');
+          localStorage.removeItem('kid_session_token');
+          
+          // Clear all Supabase session keys
+          const allKeys = Object.keys(localStorage);
+          const supabaseKeys = allKeys.filter(key => 
+            key.startsWith('sb-') || key.includes('supabase') || key.includes('auth-token')
+          );
+          supabaseKeys.forEach(key => localStorage.removeItem(key));
+          
+          console.log('✅ Invalid session cleared. Redirecting to login...');
+          window.location.href = '/login';
+          return;
+        }
+        
+        // Session expired - user needs to log in again
+        if (refreshError?.message?.includes('refresh_token_not_found')) {
+          console.error('Session expired - redirecting to login');
+          window.location.href = '/login';
+          return;
+        }
+      } else {
+        console.log('✅ Session refreshed successfully');
+      }
+      
       // Fetch family data (includes invite code)
       console.log('📡 Fetching family data for familyId:', familyId);
       const familyData = await getFamily(familyId);
@@ -181,56 +276,58 @@ export function FamilyProvider({ children: reactChildren }: { children: ReactNod
       setFamily(familyData);
       
       console.log('📡 Fetching children for familyId:', familyId);
+      console.log('🔍 About to call getChildren API...');
       const childrenData = await getChildren(familyId);
       console.log('✅ Children fetched successfully:', childrenData.length, 'children');
+      console.log('👶 Children data:', childrenData);
       setChildren(childrenData);
+    } catch (error: any) {
+      console.error('Error loading family data:', error);
       
-      // Auto-select first child ONLY in kid mode
-      // In parent mode, let parents explicitly select which child to view
-      const currentRole = getCurrentRole();
-      const isKidMode = currentRole === 'child';
+      // Handle specific error cases
+      const errorMessage = error?.message || String(error);
       
-      console.log('📋 Family data loaded - checking auto-select:', {
-        childCount: childrenData.length,
-        hasSelectedChild: !!selectedChildId,
-        currentRole,
-        isKidMode
-      });
-      
-      // CRITICAL: Only auto-select in kid mode
-      // In parent mode, we never auto-select to prevent unauthorized data loading
-      if (childrenData.length > 0 && !selectedChildId && isKidMode) {
-        // In kid mode, auto-select the logged-in child
-        const kidChildId = localStorage.getItem('child_id');
-        if (kidChildId && childrenData.some(c => c.id === kidChildId)) {
-          console.log('Auto-selecting logged-in child:', kidChildId);
-          setSelectedChildId(kidChildId);
+      // Access denied - user is not a member of this family
+      if (errorMessage.includes('Access denied') || errorMessage.includes('403')) {
+        console.error('🚨 CRITICAL: User does not have access to family:', familyId);
+        console.log('🔄 Clearing stale family ID and session data...');
+        
+        // Clear family-related data
+        localStorage.removeItem('fgs_family_id');
+        localStorage.removeItem('fgs_selected_child_id');
+        setFamilyIdState(null);
+        setFamily(null);
+        setChildren([]);
+        
+        console.log('✅ Stale family data cleared. User needs to create/join a family.');
+        
+        // Redirect to appropriate page based on user role
+        const userRole = getCurrentRole();
+        if (userRole === 'child') {
+          console.log('📍 Redirecting to kid login (session invalid)');
+          window.location.href = '/kid/login';
         } else {
-          // Fallback to first child if kid's ID not found
-          console.log('Auto-selecting first child as fallback');
-          setSelectedChildId(childrenData[0].id);
+          console.log('📍 Redirecting to onboarding (no family access)');
+          window.location.href = '/onboarding';
         }
-      } else if (!isKidMode && childrenData.length === 1 && !selectedChildId) {
-        // NEW: In parent mode, if there's only one child, auto-select for convenience
-        console.log('✅ Parent mode with single child - auto-selecting:', childrenData[0].name);
-        setSelectedChildId(childrenData[0].id);
-      } else if (!isKidMode) {
-        console.log('⚠️ Parent mode detected - NOT auto-selecting child');
-        // Ensure selectedChildId is cleared in parent mode
-        if (selectedChildId) {
-          console.log('⚠️ Clearing stale selectedChildId in parent mode');
-          setSelectedChildIdState(null);
-        }
+        return;
       }
       
-      console.log('Family data loaded:', {
-        childCount: childrenData.length,
-        selectedChildId,
-        currentRole,
-        isKidMode
-      });
-    } catch (error) {
-      console.error('Error loading family data:', error);
+      // Family not found
+      if (errorMessage.includes('not found') || errorMessage.includes('404')) {
+        console.error('🚨 CRITICAL: Family does not exist:', familyId);
+        console.log('🔄 Clearing stale family ID...');
+        
+        localStorage.removeItem('fgs_family_id');
+        localStorage.removeItem('fgs_selected_child_id');
+        setFamilyIdState(null);
+        setFamily(null);
+        setChildren([]);
+        
+        console.log('✅ Stale family data cleared. User needs to create/join a family.');
+        window.location.href = '/onboarding';
+        return;
+      }
     } finally {
       setLoading(false);
     }
@@ -413,7 +510,20 @@ export function FamilyProvider({ children: reactChildren }: { children: ReactNod
   };
 
   const getCurrentChild = () => {
-    return children.find(c => c.id === selectedChildId);
+    const child = children.find(c => c.id === selectedChildId);
+    
+    // Only log if there's an issue AND we're not currently loading data
+    // (During loading, it's normal for children array to be empty)
+    if (!child && selectedChildId && !loading && children.length === 0) {
+      console.warn('⚠️ getCurrentChild: Child not found after data load:', {
+        selectedChildId,
+        childrenCount: children.length,
+        loading,
+        allChildrenIds: children.map(c => c.id)
+      });
+    }
+    
+    return child;
   };
 
   return (

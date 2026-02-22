@@ -75,7 +75,7 @@ export function Rewards() {
   const nextMilestone = uniqueMilestones.find(m => m.points > child.currentPoints);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="page-parent-rewards">
       {/* NEW FEATURES BANNER */}
       <div className="grid md:grid-cols-2 gap-4">
         <button
@@ -199,6 +199,7 @@ export function Rewards() {
             {smallRewards.map(reward => {
               const canAfford = child.currentPoints >= reward.pointCost;
               const isTarget = child.targetRewardId === reward.id;
+              const progress = (child.currentPoints / reward.pointCost) * 100;
               
               return (
                 <div 
@@ -214,6 +215,15 @@ export function Rewards() {
                     </div>
                     {isTarget && <Badge variant="outline">Target</Badge>}
                   </div>
+                  
+                  {!canAfford && (
+                    <div className="my-3">
+                      <Progress value={progress} />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {reward.pointCost - child.currentPoints} points to go
+                      </p>
+                    </div>
+                  )}
                   
                   <div className="flex items-center justify-between mt-3">
                     <Badge variant="secondary">{reward.pointCost} points</Badge>
@@ -263,7 +273,7 @@ export function Rewards() {
                     {isTarget && <Badge variant="outline">Target</Badge>}
                   </div>
                   
-                  {isTarget && !canAfford && (
+                  {!canAfford && (
                     <div className="my-3">
                       <Progress value={progress} />
                       <p className="text-xs text-muted-foreground mt-1">

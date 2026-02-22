@@ -11,12 +11,28 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 
 export function AuditTrail() {
   const { isParentMode } = useAuth();
-  const { getCurrentChild, pointEvents } = useFamilyContext();
+  const { getCurrentChild, pointEvents, children, familyId } = useFamilyContext();
   const { items: trackableItems } = useTrackableItems();
   const [filter, setFilter] = useState<'all' | 'adjustments' | 'recovery'>('all');
   
   const child = getCurrentChild();
 
+  // ✅ SIMPLIFIED: No need to fetch names - server now sends logged_by_display
+  const getUserName = (event: any): string => {
+    // Use server-provided logged_by_display if available
+    if (event.logged_by_display) {
+      return event.logged_by_display;
+    }
+    
+    // Fallback logic for events without logged_by_display
+    if (!event.loggedBy || event.loggedBy === 'system') {
+      return 'System';
+    }
+    
+    // Final fallback
+    return 'User';
+  };
+  
   if (!isParentMode) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -140,7 +156,9 @@ export function AuditTrail() {
                               </div>
                             </TableCell>
                             <TableCell className="text-sm text-muted-foreground">
-                              {event.loggedBy || 'Unknown'}
+                              <span data-testid="audit-logged-by-display">
+                                {getUserName(event)}
+                              </span>
                               {event.editedBy && (
                                 <Badge variant="outline" className="ml-2 text-xs">
                                   Edited

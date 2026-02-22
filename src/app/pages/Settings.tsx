@@ -15,13 +15,16 @@ import { useTrackableItems } from "../hooks/useTrackableItems";
 import { useMilestones } from "../hooks/useMilestones";
 import { createChild, generateInviteCode } from "../../utils/api";
 import { toast } from "sonner";
-import { Lock, Plus, X, Gift, Target, Award, Sparkles, TrendingUp, TrendingDown, Users, AlertTriangle, Heart, UserCheck, UserX, Trash2 } from "lucide-react";
+import { Lock, Plus, X, Gift, Target, Award, Sparkles, TrendingUp, TrendingDown, Users, AlertTriangle, Heart, UserCheck, UserX, Trash2, Globe, Bell, BellOff } from "lucide-react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info.tsx";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "../components/ui/alert-dialog";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { deduplicateTrackableItems } from "../../utils/api";
 import { supabase } from "../../../utils/supabase/client";
+import { QuestSettings } from "../components/QuestSettings";
+import { COMMON_TIMEZONES } from "../utils/timezone";
+import { isPushNotificationsSupported, checkPushPermissions, requestPushPermissions, initializePushNotifications } from "../utils/pushNotifications";
 
 // Helper function to deduplicate items by name (client-side safety net)
 const deduplicateByName = <T extends { id: string; name: string }>(items: T[]): T[] => {
@@ -79,6 +82,29 @@ export function Settings() {
   const [itemIsReligious, setItemIsReligious] = useState(false);
   const [showItemDialog, setShowItemDialog] = useState(false);
   const [showTemplates, setShowTemplates] = useState(true);
+
+  // Quest Settings State
+  const [questEnabled, setQuestEnabled] = useState(true);
+  const [dailyBonus, setDailyBonus] = useState("20");
+  const [weeklyBonus, setWeeklyBonus] = useState("50");
+  const [easyMultiplier, setEasyMultiplier] = useState("1");
+  const [mediumMultiplier, setMediumMultiplier] = useState("1.5");
+  const [hardMultiplier, setHardMultiplier] = useState("2");
+  const [questSettingsLoading, setQuestSettingsLoading] = useState(false);
+
+  // Timezone State
+  const [familyTimezone, setFamilyTimezone] = useState(family?.timezone || 'UTC');
+
+  // Push Notification State
+  const [pushPermissionStatus, setPushPermissionStatus] = useState<'granted' | 'denied' | 'prompt'>('prompt');
+  const [pushSupported, setPushSupported] = useState(false);
+  const [loadingPushStatus, setLoadingPushStatus] = useState(true);
+
+  // Account Deletion State
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   // Quick templates for common items
   const templates = {
@@ -143,6 +169,29 @@ export function Settings() {
       toast.error("Settings are for parents only! Redirecting to your dashboard...");
     }
   }, [isParentMode, navigate]);
+
+  // Check push notification status on mount
+  useEffect(() => {
+    const checkPushStatus = async () => {
+      setLoadingPushStatus(true);
+      try {
+        const supported = isPushNotificationsSupported();
+        setPushSupported(supported);
+        
+        if (supported) {
+          const status = await checkPushPermissions();
+          setPushPermissionStatus(status);
+          console.log('📬 Push notification status:', status);
+        }
+      } catch (error) {
+        console.error('Failed to check push notification status:', error);
+      } finally {
+        setLoadingPushStatus(false);
+      }
+    };
+
+    checkPushStatus();
+  }, []);
 
   if (!isParentMode) {
     return null; // Don't render anything while redirecting
@@ -470,9 +519,267 @@ export function Settings() {
   useEffect(() => {
     if (familyId) {
       fetchJoinRequests();
+      loadQuestSettings();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [familyId]);
+
+  // Sync timezone state when family data changes
+  useEffect(() => {
+    if (family?.timezone) {
+      setFamilyTimezone(family.timezone);
+    }
+  }, [family?.timezone]);
+
+  // Load quest settings
+  const loadQuestSettings = async () => {
+    if (!familyId || !accessToken) return;
+    
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/families/${familyId}/quest-settings`,
+        {
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey': publicAnonKey
+          }
+        }
+      );
+
+      if (response.ok) {
+        const settings = await response.json();
+        setQuestEnabled(settings.enabled ?? true);
+        setDailyBonus(String(settings.dailyBonusPoints ?? 20));
+        setWeeklyBonus(String(settings.weeklyBonusPoints ?? 50));
+        setEasyMultiplier(String(settings.difficultyMultipliers?.easy ?? 1));
+        setMediumMultiplier(String(settings.difficultyMultipliers?.medium ?? 1.5));
+        setHardMultiplier(String(settings.difficultyMultipliers?.hard ?? 2));
+      }
+    } catch (error) {
+      console.error('Load quest settings error:', error);
+    }
+  };
+
+  // Save quest settings
+  const handleSaveQuestSettings = async () => {
+    if (!familyId || !accessToken) return;
+    
+    try {
+      setQuestSettingsLoading(true);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast.error('No valid session');
+        return;
+      }
+
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/families/${familyId}/quest-settings`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey': publicAnonKey
+          },
+          body: JSON.stringify({
+            enabled: questEnabled,
+            dailyBonusPoints: parseInt(dailyBonus) || 20,
+            weeklyBonusPoints: parseInt(weeklyBonus) || 50,
+            difficultyMultipliers: {
+              easy: parseFloat(easyMultiplier) || 1,
+              medium: parseFloat(mediumMultiplier) || 1.5,
+              hard: parseFloat(hardMultiplier) || 2
+            }
+          })
+        }
+      );
+
+      if (response.ok) {
+        toast.success('Quest settings saved!');
+      } else {
+        const error = await response.json();
+        toast.error(error.error || 'Failed to save quest settings');
+      }
+    } catch (error) {
+      console.error('Save quest settings error:', error);
+      toast.error('Failed to save quest settings');
+    } finally {
+      setQuestSettingsLoading(false);
+    }
+  };
+
+  // Handle timezone change
+  const handleTimezoneChange = async (newTimezone: string) => {
+    if (!familyId || !accessToken) return;
+    
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast.error('No valid session');
+        return;
+      }
+      
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/families/${familyId}/timezone`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey': publicAnonKey
+          },
+          body: JSON.stringify({ timezone: newTimezone }),
+        }
+      );
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to update timezone');
+      }
+      
+      setFamilyTimezone(newTimezone);
+      toast.success('Timezone updated successfully');
+      
+      // Reload family data to get updated timezone
+      await loadFamilyData();
+    } catch (error) {
+      console.error('Failed to update timezone:', error);
+      toast.error('Failed to update timezone');
+    }
+  };
+
+  // Handle enabling push notifications
+  const handleEnablePushNotifications = async () => {
+    if (!pushSupported) {
+      toast.error('Push notifications are not supported on this device');
+      return;
+    }
+
+    try {
+      const granted = await requestPushPermissions();
+      
+      if (granted) {
+        setPushPermissionStatus('granted');
+        toast.success('Push notifications enabled! 🔔');
+        
+        // Initialize push notifications with user ID
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          await initializePushNotifications(user.id);
+        }
+      } else {
+        setPushPermissionStatus('denied');
+        toast.error('Push notification permission denied');
+      }
+    } catch (error) {
+      console.error('Failed to enable push notifications:', error);
+      toast.error('Failed to enable push notifications');
+    }
+  };
+
+  // Handle disabling push notifications
+  const handleDisablePushNotifications = async () => {
+    if (!accessToken) {
+      toast.error('Authentication required');
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/notifications/unregister-token`,
+        {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'apikey': publicAnonKey
+          }
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to unregister token');
+      }
+
+      setPushPermissionStatus('prompt');
+      toast.success('Push notifications disabled');
+    } catch (error) {
+      console.error('Failed to disable push notifications:', error);
+      toast.error('Failed to disable push notifications');
+    }
+  };
+
+  // Handle account deletion
+  const handleDeleteAccount = async () => {
+    if (!accessToken) {
+      toast.error('Authentication required');
+      return;
+    }
+
+    // Validate confirmation text
+    if (deleteConfirmText !== 'DELETE') {
+      toast.error('Please type DELETE to confirm');
+      return;
+    }
+
+    // Validate password
+    if (!deletePassword || deletePassword.length < 6) {
+      toast.error('Please enter your password');
+      return;
+    }
+
+    setIsDeletingAccount(true);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast.error('No valid session');
+        setIsDeletingAccount(false);
+        return;
+      }
+
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/auth/account`,
+        {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey': publicAnonKey
+          },
+          body: JSON.stringify({ password: deletePassword }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to delete account');
+      }
+
+      const result = await response.json();
+      
+      // Show success message
+      toast.success(result.deletionScope === 'entire_family' 
+        ? 'Account and family deleted successfully' 
+        : 'Account deleted successfully'
+      );
+
+      // Sign out and redirect to login
+      await supabase.auth.signOut();
+      navigate('/login');
+      
+    } catch (error: any) {
+      console.error('Account deletion error:', error);
+      toast.error(error.message || 'Failed to delete account');
+    } finally {
+      setIsDeletingAccount(false);
+      setShowDeleteDialog(false);
+      setDeletePassword("");
+      setDeleteConfirmText("");
+    }
+  };
 
   // Detect duplicate rewards by name
   const duplicateRewards = rewards.reduce((acc, reward, index, arr) => {
@@ -579,7 +886,7 @@ export function Settings() {
   const negativeBehaviors = uniqueItems.filter(i => i.type === 'behavior' && i.points < 0);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="page-parent-settings">
       <div>
         <h1 className="text-2xl sm:text-3xl font-bold">Family Settings</h1>
         <p className="text-muted-foreground mt-1">
@@ -588,10 +895,14 @@ export function Settings() {
       </div>
 
       <Tabs defaultValue="rewards" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-7">
           <TabsTrigger value="children">
             <Users className="h-4 w-4 mr-2" />
             <span className="hidden sm:inline">Children</span>
+          </TabsTrigger>
+          <TabsTrigger value="notifications">
+            <Bell className="h-4 w-4 mr-2" />
+            <span className="hidden sm:inline">Notifications</span>
           </TabsTrigger>
           <TabsTrigger value="rewards">
             <Gift className="h-4 w-4 mr-2" />
@@ -601,9 +912,17 @@ export function Settings() {
             <Target className="h-4 w-4 mr-2" />
             <span className="hidden sm:inline">Behaviors</span>
           </TabsTrigger>
+          <TabsTrigger value="quests">
+            <Sparkles className="h-4 w-4 mr-2" />
+            <span className="hidden sm:inline">Quests</span>
+          </TabsTrigger>
           <TabsTrigger value="milestones">
             <Award className="h-4 w-4 mr-2" />
             <span className="hidden sm:inline">Milestones</span>
+          </TabsTrigger>
+          <TabsTrigger value="danger" className="text-red-600">
+            <AlertTriangle className="h-4 w-4 mr-2" />
+            <span className="hidden sm:inline">Danger</span>
           </TabsTrigger>
         </TabsList>
 
@@ -761,6 +1080,45 @@ export function Settings() {
                 </div>
               </div>
 
+              {/* Family Timezone */}
+              <div className="mt-6 bg-gradient-to-br from-blue-50 to-cyan-50 border-2 border-blue-200 rounded-lg p-4">
+                <div className="flex items-start gap-3">
+                  <Globe className="h-5 w-5 text-blue-600 mt-0.5" />
+                  <div className="flex-1">
+                    <h4 className="font-semibold text-blue-900 mb-1">Family Timezone</h4>
+                    <p className="text-sm text-blue-800 mb-3">
+                      Controls when daily resets occur for prayer tracking, streaks, and daily caps
+                    </p>
+                    
+                    <div className="space-y-2">
+                      <Label htmlFor="timezone">Current Timezone</Label>
+                      <Select
+                        value={familyTimezone}
+                        onValueChange={handleTimezoneChange}
+                      >
+                        <SelectTrigger className="w-full bg-white">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {COMMON_TIMEZONES.map((tz) => (
+                            <SelectItem key={tz.value} value={tz.value}>
+                              {tz.label} ({tz.offset})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      
+                      <p className="text-xs text-blue-700">
+                        <strong>Current:</strong> {familyTimezone}
+                      </p>
+                      <p className="text-xs text-amber-600">
+                        ⚠️ Changing timezone affects daily resets, prayer tracking, and streak calculations.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {/* Pending Join Requests */}
               {joinRequests.length > 0 && (
                 <div className="mt-6 bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-lg p-4">
@@ -893,6 +1251,126 @@ export function Settings() {
                   They'll use their PIN to log into Kid Mode!
                 </p>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* NOTIFICATIONS TAB */}
+        <TabsContent value="notifications" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Bell className="h-5 w-5" />
+                <div>
+                  <CardTitle>Push Notifications</CardTitle>
+                  <CardDescription>
+                    Get notified when your kids log prayers, claim rewards, or reach milestones
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!pushSupported && (
+                <Alert>
+                  <BellOff className="h-4 w-4" />
+                  <AlertTitle>Not Available</AlertTitle>
+                  <AlertDescription>
+                    Push notifications are only available on iOS and Android devices.
+                    You're currently using a web browser.
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {pushSupported && loadingPushStatus && (
+                <div className="text-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+                  <p className="text-sm text-muted-foreground mt-2">Checking notification status...</p>
+                </div>
+              )}
+
+              {pushSupported && !loadingPushStatus && (
+                <>
+                  {pushPermissionStatus === 'granted' && (
+                    <Alert className="border-green-200 bg-green-50">
+                      <Bell className="h-4 w-4 text-green-600" />
+                      <AlertTitle className="text-green-900">Notifications Enabled</AlertTitle>
+                      <AlertDescription className="text-green-800">
+                        You'll receive notifications for important family events.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {pushPermissionStatus === 'denied' && (
+                    <Alert variant="destructive">
+                      <BellOff className="h-4 w-4" />
+                      <AlertTitle>Notifications Blocked</AlertTitle>
+                      <AlertDescription>
+                        You've blocked notifications. To enable them, please go to your device's Settings → 
+                        FGS Parent → Notifications and turn them on.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {pushPermissionStatus === 'prompt' && (
+                    <Alert>
+                      <Bell className="h-4 w-4" />
+                      <AlertTitle>Enable Notifications</AlertTitle>
+                      <AlertDescription>
+                        Get notified when your kids need your attention. We promise not to spam you!
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  <div className="space-y-3">
+                    <h4 className="font-medium text-sm">You'll be notified when:</h4>
+                    <ul className="space-y-2 text-sm text-muted-foreground">
+                      <li className="flex items-center gap-2">
+                        <div className="h-1.5 w-1.5 rounded-full bg-primary"></div>
+                        Kids log prayers (need your approval)
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <div className="h-1.5 w-1.5 rounded-full bg-primary"></div>
+                        Kids claim rewards (need your approval)
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <div className="h-1.5 w-1.5 rounded-full bg-primary"></div>
+                        Someone requests to join your family
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <div className="h-1.5 w-1.5 rounded-full bg-primary"></div>
+                        Kids reach new milestones
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div className="flex gap-2 pt-2">
+                    {pushPermissionStatus === 'prompt' && (
+                      <Button onClick={handleEnablePushNotifications} className="w-full">
+                        <Bell className="h-4 w-4 mr-2" />
+                        Enable Notifications
+                      </Button>
+                    )}
+
+                    {pushPermissionStatus === 'granted' && (
+                      <Button 
+                        onClick={handleDisablePushNotifications} 
+                        variant="outline"
+                        className="w-full"
+                      >
+                        <BellOff className="h-4 w-4 mr-2" />
+                        Disable Notifications
+                      </Button>
+                    )}
+
+                    {pushPermissionStatus === 'denied' && (
+                      <Button variant="outline" className="w-full" disabled>
+                        <BellOff className="h-4 w-4 mr-2" />
+                        Blocked in Settings
+                      </Button>
+                    )}
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -1635,6 +2113,34 @@ export function Settings() {
           </Card>
         </TabsContent>
 
+        {/* QUESTS TAB */}
+        <TabsContent value="quests" className="space-y-4">
+          <QuestSettings 
+            familyId={familyId} 
+            accessToken={accessToken}
+            compact={false}
+          />
+
+          {/* Info Card */}
+          <Card className="bg-purple-50 border-purple-200">
+            <CardContent className="pt-6">
+              <div className="flex items-start gap-3">
+                <Sparkles className="h-5 w-5 text-purple-600 mt-0.5" />
+                <div className="flex-1">
+                  <h3 className="font-semibold text-purple-900 mb-1">How Quests Work</h3>
+                  <ul className="text-sm text-purple-800 space-y-1 list-disc list-inside">
+                    <li>Quests are automatically generated based on your configured behaviors</li>
+                    <li>Kids can accept quests to earn <strong>bonus points</strong> on top of regular behavior points</li>
+                    <li>Daily quests reset every day, weekly quests reset every week</li>
+                    <li>Quest difficulty affects the bonus points awarded (Easy/Medium/Hard)</li>
+                    <li>Kids see available quests on their Challenges page</li>
+                  </ul>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {/* MILESTONES TAB */}
         <TabsContent value="milestones" className="space-y-4">
           <Card>
@@ -1772,6 +2278,188 @@ export function Settings() {
                   short-term and long-term goals. This keeps them motivated throughout their journey!
                 </p>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* DANGER ZONE TAB */}
+        <TabsContent value="danger" className="space-y-4">
+          <Card className="border-red-200 bg-red-50">
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="h-6 w-6 text-red-600" />
+                <div>
+                  <CardTitle className="text-red-900">Danger Zone</CardTitle>
+                  <CardDescription className="text-red-700">
+                    Irreversible actions that will permanently delete data
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              
+              {/* Delete Account Section */}
+              <div className="border-2 border-red-300 rounded-lg p-6 bg-white">
+                <div className="flex items-start gap-4">
+                  <Trash2 className="h-6 w-6 text-red-600 mt-1 flex-shrink-0" />
+                  <div className="flex-1 space-y-3">
+                    <div>
+                      <h3 className="font-semibold text-red-900 text-lg">Delete Your Account</h3>
+                      <p className="text-sm text-red-700 mt-1">
+                        Once you delete your account, there is no going back. This action cannot be undone.
+                      </p>
+                    </div>
+
+                    <Alert className="bg-amber-50 border-amber-300">
+                      <AlertTriangle className="h-4 w-4 text-amber-600" />
+                      <AlertTitle className="text-amber-900">What will be deleted?</AlertTitle>
+                      <AlertDescription className="text-amber-800 text-sm space-y-2">
+                        {family && family.parentIds && family.parentIds.length === 1 ? (
+                          // Sole parent
+                          <>
+                            <p className="font-semibold">⚠️ You are the only parent in this family.</p>
+                            <p>Deleting your account will delete:</p>
+                            <ul className="list-disc list-inside space-y-1 ml-2">
+                              <li>Your entire family ({family.name})</li>
+                              <li>All children in the family ({children.length} {children.length === 1 ? 'child' : 'children'})</li>
+                              <li>All habits, behaviors, rewards, and milestones</li>
+                              <li>All activity logs and progress data</li>
+                              <li>All prayer claims and wishlist items</li>
+                              <li>All custom quests and settings</li>
+                            </ul>
+                            <p className="font-semibold text-red-600 mt-2">
+                              This will permanently delete everything for your entire family.
+                            </p>
+                          </>
+                        ) : (
+                          // Dual parent
+                          <>
+                            <p>Since another parent exists in your family, deleting your account will:</p>
+                            <ul className="list-disc list-inside space-y-1 ml-2">
+                              <li>Remove ONLY your account</li>
+                              <li>Preserve the family and all children</li>
+                              <li>Preserve all family data (habits, rewards, logs, etc.)</li>
+                              <li>The other parent will retain full access</li>
+                            </ul>
+                            <p className="font-semibold text-blue-600 mt-2">
+                              Your family data will be preserved for the other parent.
+                            </p>
+                          </>
+                        )}
+                      </AlertDescription>
+                    </Alert>
+
+                    <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="destructive" className="w-full sm:w-auto">
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete My Account
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle className="flex items-center gap-2 text-red-600">
+                            <AlertTriangle className="h-5 w-5" />
+                            Permanently Delete Account?
+                          </AlertDialogTitle>
+                          <AlertDialogDescription className="space-y-4">
+                            <p className="text-red-600 font-semibold">
+                              This action cannot be undone. This will permanently delete your account
+                              {family && family.parentIds && family.parentIds.length === 1 
+                                ? ' and your entire family with all data.' 
+                                : ', but your family will be preserved for the other parent.'}
+                            </p>
+
+                            <div className="space-y-3">
+                              <div>
+                                <Label htmlFor="delete-confirm" className="text-sm font-medium">
+                                  Type <span className="font-mono font-bold">DELETE</span> to confirm
+                                </Label>
+                                <Input
+                                  id="delete-confirm"
+                                  value={deleteConfirmText}
+                                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                                  placeholder="Type DELETE here"
+                                  className="mt-1"
+                                  autoComplete="off"
+                                />
+                              </div>
+
+                              <div>
+                                <Label htmlFor="delete-password" className="text-sm font-medium">
+                                  Enter your password to confirm
+                                </Label>
+                                <Input
+                                  id="delete-password"
+                                  type="password"
+                                  value={deletePassword}
+                                  onChange={(e) => setDeletePassword(e.target.value)}
+                                  placeholder="Your password"
+                                  className="mt-1"
+                                  autoComplete="current-password"
+                                />
+                              </div>
+                            </div>
+
+                            <Alert className="bg-red-50 border-red-300">
+                              <AlertTriangle className="h-4 w-4 text-red-600" />
+                              <AlertDescription className="text-red-800 text-xs">
+                                <strong>Final warning:</strong> All data will be permanently deleted from our servers.
+                                You will be immediately logged out and cannot recover this account.
+                              </AlertDescription>
+                            </Alert>
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel 
+                            onClick={() => {
+                              setDeletePassword("");
+                              setDeleteConfirmText("");
+                            }}
+                          >
+                            Cancel
+                          </AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={(e) => {
+                              e.preventDefault();
+                              handleDeleteAccount();
+                            }}
+                            disabled={isDeletingAccount || deleteConfirmText !== 'DELETE' || !deletePassword}
+                            className="bg-red-600 hover:bg-red-700"
+                          >
+                            {isDeletingAccount ? (
+                              <>
+                                <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2" />
+                                Deleting...
+                              </>
+                            ) : (
+                              <>
+                                <Trash2 className="h-4 w-4 mr-2" />
+                                Delete Account Permanently
+                              </>
+                            )}
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
+                </div>
+              </div>
+
+              {/* Info about data privacy */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h4 className="font-semibold text-blue-900 mb-2">🔒 Your Data Privacy</h4>
+                <p className="text-sm text-blue-800">
+                  We respect your right to delete your data. When you delete your account:
+                </p>
+                <ul className="text-sm text-blue-800 list-disc list-inside mt-2 space-y-1">
+                  <li>All personal information is permanently removed from our servers</li>
+                  <li>Your data cannot be recovered after deletion</li>
+                  <li>We do not retain any copies or backups of deleted accounts</li>
+                  <li>Deletion happens immediately upon confirmation</li>
+                </ul>
+              </div>
+
             </CardContent>
           </Card>
         </TabsContent>

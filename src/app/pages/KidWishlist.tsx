@@ -6,9 +6,10 @@ import { Button } from '../components/ui/button';
 import { Textarea } from '../components/ui/textarea';
 import { Input } from '../components/ui/input';
 import { toast } from 'sonner';
-import { Sparkles, Send, Gift, Clock, CheckCircle2, XCircle } from 'lucide-react';
+import { Sparkles, Send, Gift, Clock, CheckCircle2, XCircle, ArrowLeft } from 'lucide-react';
 import { motion } from 'motion/react';
 import { getKidInfo } from '../utils/auth';
+import { useNavigate } from 'react-router';
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f`;
 
@@ -29,6 +30,7 @@ export function KidWishlist() {
   const { accessToken } = useAuth();
   const child = getCurrentChild();
   const kidInfo = getKidInfo();
+  const navigate = useNavigate();
   
   const [wishText, setWishText] = useState('');
   const [wishlistItems, setWishlistItems] = useState<WishlistItem[]>([]);
@@ -46,7 +48,7 @@ export function KidWishlist() {
     try {
       setLoading(true);
       const response = await fetch(
-        `${API_BASE}/families/${familyId}/wishlist-items`,
+        `${API_BASE}/wishlists`,
         {
           headers: { 'Authorization': `Bearer ${accessToken}` }
         }
@@ -81,7 +83,7 @@ export function KidWishlist() {
 
     try {
       setSubmitting(true);
-      const response = await fetch(`${API_BASE}/wishlist-items`, {
+      const response = await fetch(`${API_BASE}/wishlists`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -145,7 +147,17 @@ export function KidWishlist() {
   }
 
   return (
-    <div className="space-y-6 pb-20">
+    <div className="space-y-6 pb-20" data-testid="page-kid-wishlist">
+      {/* Back Button */}
+      <Button
+        onClick={() => navigate('/kid/home')}
+        variant="ghost"
+        className="mb-2 text-gray-600 hover:text-gray-800"
+      >
+        <ArrowLeft className="w-4 h-4 mr-2" />
+        Back to Dashboard
+      </Button>
+
       {/* Header */}
       <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-[1.5rem] p-6 border border-purple-100">
         <div className="flex items-center gap-3 mb-3">

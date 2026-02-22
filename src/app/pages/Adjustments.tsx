@@ -12,7 +12,7 @@ import { Lock } from "lucide-react";
 
 export function Adjustments() {
   const { isParentMode } = useAuth();
-  const { getCurrentChild, addAdjustment } = useFamilyContext();
+  const { getCurrentChild, addAdjustment, loading } = useFamilyContext();
   const [points, setPoints] = useState("");
   const [reason, setReason] = useState("");
   const [type, setType] = useState<"positive" | "negative">("positive");
@@ -33,6 +33,18 @@ export function Adjustments() {
             </div>
           </CardContent>
         </Card>
+      </div>
+    );
+  }
+
+  // Show loading state while data is being fetched
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
       </div>
     );
   }

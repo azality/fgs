@@ -97,11 +97,16 @@ function LandCard({
 
         {/* Locked Overlay */}
         {!land.isUnlocked && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm rounded-[1.5rem] z-10">
-            <Lock className="w-12 h-12 text-gray-500 mb-2" />
-            <p className="text-sm font-semibold text-gray-700">Locked</p>
-            <p className="text-xs text-gray-600 mt-2 text-center px-4">
-              {pointsNeeded} more points needed
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/60 backdrop-blur-sm rounded-[1.5rem] z-10">
+            <Lock className="w-12 h-12 text-white mb-3" />
+            <h3 className="text-base font-bold text-white mb-1 px-4 text-center">
+              {land.name}
+            </h3>
+            <p className="text-sm font-semibold text-[var(--kid-warm-gold)] bg-white/20 px-3 py-1 rounded-full">
+              {pointsNeeded} more points
+            </p>
+            <p className="text-xs text-white/80 mt-2 text-center px-4">
+              {land.description}
             </p>
           </div>
         )}

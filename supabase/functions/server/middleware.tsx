@@ -1,8 +1,8 @@
 import { Context } from "npm:hono";
 import { createClient } from "npm:@supabase/supabase-js@2.39.3";
-import * as jose from "https://deno.land/x/jose@v5.9.6/index.ts";
+import { verifyKidSession as verifyKidSessionFromModule } from "./kidSessions.tsx";
 
-// JWT Authentication Middleware - Fixed JWT verification (v2)
+// JWT Authentication Middleware - Fixed JWT verification (v3)
 // CRITICAL: Create TWO separate clients
 // 1. Service role client for admin operations (user management, bypassing RLS)
 // 2. Anon key client for JWT verification (must use same key that issued the tokens)
@@ -25,36 +25,13 @@ export { serviceRoleClient };
 // Get environment variables for JWT verification
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
-const SUPABASE_JWT_SECRET = Deno.env.get("SUPABASE_JWT_SECRET") || Deno.env.get("JWT_SECRET");
 
 /**
  * Kid session verification utility
  */
 async function verifyKidSession(token: string) {
-  try {
-    const sessions = await import("./kv_store.tsx");
-    const sessionKey = `kidsession:${token}`;
-    const session = await sessions.get(sessionKey);
-    
-    if (!session) {
-      return { valid: false, error: "Session not found" };
-    }
-    
-    // Check if session is expired (24 hour sessions)
-    const expiresAt = new Date(session.expiresAt);
-    if (expiresAt < new Date()) {
-      return { valid: false, error: "Session expired" };
-    }
-    
-    return {
-      valid: true,
-      childId: session.childId,
-      familyId: session.familyId,
-    };
-  } catch (error) {
-    console.error('❌ Kid session verification error:', error);
-    return { valid: false, error: "Verification failed" };
-  }
+  // Use the proper module function
+  return await verifyKidSessionFromModule(token);
 }
 
 /**
@@ -63,7 +40,22 @@ async function verifyKidSession(token: string) {
  * Returns user object or null
  */
 async function verifyToken(c: Context) {
-  const authHeader = c.req.header("Authorization") || c.req.header("authorization");
+  // 🆕 Check BOTH standard Authorization header AND custom X-Supabase-Auth header
+  // Supabase Edge Functions may strip Authorization header even when "Verify JWT" is disabled
+  const authHeader = 
+    c.req.header("Authorization") || 
+    c.req.header("authorization") ||
+    c.req.header("X-Supabase-Auth") ||
+    c.req.header("x-supabase-auth");
+  
+  console.log('🔍 verifyToken: Checking auth headers:', {
+    hasAuthorization: !!(c.req.header("Authorization") || c.req.header("authorization")),
+    hasXSupabaseAuth: !!(c.req.header("X-Supabase-Auth") || c.req.header("x-supabase-auth")),
+    authHeaderSource: authHeader ? 
+      (c.req.header("Authorization") || c.req.header("authorization") ? 'Authorization' : 'X-Supabase-Auth') : 
+      'none',
+    authHeaderPreview: authHeader?.substring(0, 30) + '...'
+  });
   
   if (!authHeader || (!authHeader.startsWith("Bearer "))) {
     return null;
@@ -75,15 +67,36 @@ async function verifyToken(c: Context) {
     return null;
   }
 
+  // CRITICAL: If token is the anon key, return null (not an error, just no user)
+  // This allows public endpoints to work without authentication
+  if (token === SUPABASE_ANON_KEY) {
+    console.log('🔓 Public request with anon key - no user authentication');
+    return null;
+  }
+
   // Check if this is a kid session token
   if (token.startsWith('kid_')) {
+    console.log('🔍 Verifying kid session token:', {
+      tokenPreview: token.substring(0, 20) + '...',
+      tokenLength: token.length
+    });
+    
     const kidSession = await verifyKidSession(token);
     
+    console.log('🔍 Kid session verification result:', {
+      valid: kidSession.valid,
+      childId: kidSession.childId,
+      familyId: kidSession.familyId,
+      error: kidSession.error
+    });
+    
     if (!kidSession.valid) {
+      console.error('❌ Kid session invalid:', kidSession.error);
       return null;
     }
     
     // Return a pseudo-user object for kid sessions
+    console.log('✅ Kid session verified successfully');
     return {
       id: kidSession.childId,
       role: 'kid',
@@ -95,38 +108,39 @@ async function verifyToken(c: Context) {
 
   // Standard parent JWT verification using manual decode
   try {
-    // Use Supabase client for JWT verification
-    // The anonClient properly handles all JWT algorithms (HS256, ES256, RS256, etc.)
-    // and validates against the correct project secret
+    // First try using Supabase client (works for most valid tokens)
     const { data: { user }, error } = await anonClient.auth.getUser(token);
     
-    if (error || !user) {
-      console.error('❌ JWT verification failed:', {
-        errorMessage: error?.message,
-        errorName: error?.name,
-        errorStatus: error?.status,
-        hasUser: !!user,
-        tokenPreview: token?.substring(0, 30) + '...'
+    if (!error && user) {
+      console.log('✅ JWT verified successfully via Supabase client', {
+        userId: user.id,
+        email: user.email,
+        role: user.user_metadata?.role || 'parent'
       });
-      return null;
+      
+      // Return verified user object
+      return {
+        id: user.id,
+        email: user.email || '',
+        role: user.user_metadata?.role || user.role || 'parent',
+        user_metadata: user.user_metadata || { role: 'parent', name: user.email || '' },
+        app_metadata: user.app_metadata || {},
+        aud: user.aud || '',
+        created_at: user.created_at || new Date().toISOString()
+      };
     }
     
-    console.log('✅ JWT verified successfully', {
-      userId: user.id,
-      email: user.email,
-      role: user.user_metadata?.role || 'parent'
+    // If Supabase client verification failed, log the detailed error and return null
+    console.error('❌ Supabase JWT verification failed:', {
+      errorMessage: error?.message,
+      errorName: error?.name,
+      errorStatus: error?.status,
+      tokenPreview: token?.substring(0, 30) + '...',
+      tokenLength: token?.length,
+      hasToken: !!token,
+      fullError: JSON.stringify(error)
     });
-    
-    // Return verified user object
-    return {
-      id: user.id,
-      email: user.email || '',
-      role: user.user_metadata?.role || user.role || 'parent',
-      user_metadata: user.user_metadata || { role: 'parent', name: user.email || '' },
-      app_metadata: user.app_metadata || {},
-      aud: user.aud || '',
-      created_at: user.created_at || new Date().toISOString()
-    };
+    return null;
   } catch (error) {
     console.error('❌ Error during JWT verification (exception):', {
       error,
@@ -144,6 +158,22 @@ async function verifyToken(c: Context) {
 export async function requireAuth(c: Context, next: () => Promise<void>) {
   try {
     const authHeader = c.req.header("Authorization") || c.req.header("authorization");
+    
+    // 🆕 COMPREHENSIVE HEADER DEBUGGING
+    const allHeaders: Record<string, string> = {};
+    c.req.raw.headers.forEach((value, key) => {
+      allHeaders[key.toLowerCase()] = value;
+    });
+    
+    console.log('🔐 requireAuth middleware - FULL HEADER DUMP:', {
+      hasAuthHeader: !!authHeader,
+      authHeaderValue: authHeader ? `${authHeader.substring(0, 50)}...` : 'MISSING',
+      path: c.req.path,
+      method: c.req.method,
+      allHeaderKeys: Object.keys(allHeaders),
+      hasAuthorizationInRaw: allHeaders.hasOwnProperty('authorization'),
+      authorizationRawValue: allHeaders['authorization'] ? `${allHeaders['authorization'].substring(0, 50)}...` : 'N/A'
+    });
     
     // Debug logging
     console.log('🔐 requireAuth middleware called:', {

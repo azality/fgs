@@ -35,6 +35,16 @@ export function setParentMode(familyId: string): void {
   console.log('🔐 Setting parent mode');
   localStorage.setItem(STORAGE_KEYS.USER_MODE, 'parent');
   localStorage.setItem(STORAGE_KEYS.FAMILY_ID, familyId);
+  
+  // Backwards compatibility - also set old keys used by AuthContext
+  localStorage.setItem('user_role', 'parent');
+  localStorage.setItem('fgs_user_mode', 'parent');
+  
+  // Dispatch custom event to trigger AuthContext refresh
+  console.log('📢 Dispatching auth-changed event to trigger AuthContext refresh');
+  window.dispatchEvent(new CustomEvent('auth-changed', { 
+    detail: { type: 'parent-login', familyId } 
+  }));
 }
 
 /**
@@ -58,12 +68,23 @@ export async function logoutParent(): Promise<void> {
   
   // Clear mode but keep family ID
   localStorage.removeItem(STORAGE_KEYS.USER_MODE);
+  
+  // Clear old keys (backwards compatibility)
+  localStorage.removeItem('user_role');
+  localStorage.removeItem('fgs_user_mode');
 }
 
 // ===== KID AUTH =====
 
 /**
  * Set kid mode after successful kid login
+ * 
+ * CRITICAL: This function must ALWAYS set fgs_family_id in localStorage
+ * to ensure FamilyContext can load the family data when kid logs in.
+ * 
+ * @param kidAccessToken - The kid's session token
+ * @param kid - Kid info including id, name, avatar, and familyId
+ * @param familyCode - The family's invite code
  */
 export function setKidMode(
   kidAccessToken: string,
@@ -77,6 +98,12 @@ export function setKidMode(
 ): void {
   console.log('🔐 Setting kid mode for:', kid.name);
   
+  // CRITICAL VALIDATION: Ensure we have a familyId
+  if (!kid.familyId) {
+    console.error('❌ CRITICAL: setKidMode called without familyId!', kid);
+    throw new Error('Cannot set kid mode without familyId');
+  }
+  
   // New storage keys
   localStorage.setItem(STORAGE_KEYS.USER_MODE, 'kid');
   localStorage.setItem(STORAGE_KEYS.KID_ACCESS_TOKEN, kidAccessToken);
@@ -85,6 +112,18 @@ export function setKidMode(
   localStorage.setItem(STORAGE_KEYS.KID_AVATAR, kid.avatar);
   localStorage.setItem(STORAGE_KEYS.KID_FAMILY_CODE, familyCode);
   localStorage.setItem(STORAGE_KEYS.FAMILY_ID, kid.familyId);
+  
+  // CRITICAL: Verify fgs_family_id was set correctly
+  const verifyFamilyId = localStorage.getItem('fgs_family_id');
+  if (verifyFamilyId !== kid.familyId) {
+    console.error('❌ CRITICAL: fgs_family_id was not set correctly!', {
+      expected: kid.familyId,
+      actual: verifyFamilyId
+    });
+    throw new Error('Failed to set fgs_family_id in localStorage');
+  }
+  
+  console.log('✅ Family ID set successfully:', kid.familyId);
   
   // Backwards compatibility - also set old keys used by AuthContext
   localStorage.setItem('user_role', 'child');

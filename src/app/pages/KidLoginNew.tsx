@@ -1,14 +1,17 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
+import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
+import { ArrowLeft } from 'lucide-react';
+import { supabase } from '../../../utils/supabase/client';
 import { motion } from 'motion/react';
-import { publicApiCall } from '/src/utils/api-new';
+import { projectId, publicAnonKey } from '/utils/supabase/info.tsx';
 import { setKidMode } from '../utils/auth';
+
+const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f`;
 
 interface Kid {
   id: string;
@@ -38,12 +41,18 @@ export function KidLoginNew() {
     setLoading(true);
 
     try {
-      const response = await publicApiCall('/public/verify-family-code', {
+      const res = await fetch(`${API_BASE}/public/verify-family-code`, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': publicAnonKey
+        },
         body: JSON.stringify({
           familyCode: familyCode.trim().toUpperCase()
         })
       });
+
+      const response = await res.json();
 
       if (response.success) {
         setFamilyId(response.familyId);
@@ -96,14 +105,20 @@ export function KidLoginNew() {
     setLoading(true);
 
     try {
-      const response = await publicApiCall('/kid/login', {
+      const res = await fetch(`${API_BASE}/kid/login`, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': publicAnonKey
+        },
         body: JSON.stringify({
           familyCode: familyCode.trim().toUpperCase(),
           childId: selectedKid.id,
           pin: pinValue
         })
       });
+
+      const response = await res.json();
 
       if (response.success) {
         // Store kid session
@@ -122,9 +137,11 @@ export function KidLoginNew() {
         
         console.log('✅ Kid session stored, checking localStorage:', {
           user_role: localStorage.getItem('user_role'),
+          user_mode: localStorage.getItem('user_mode'),
           kid_session_token: !!localStorage.getItem('kid_session_token'),
+          kid_access_token: !!localStorage.getItem('kid_access_token'),
           child_id: localStorage.getItem('child_id'),
-          user_mode: localStorage.getItem('user_mode')
+          kid_id: localStorage.getItem('kid_id')
         });
 
         toast.success(response.message || `Welcome back, ${response.kid.name}! 🌟`);

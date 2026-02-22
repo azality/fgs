@@ -35,17 +35,24 @@ export function ChildSelector() {
 
   const selectedChild = children.find(c => c.id === selectedChildId);
 
-  // Debug logging
+  // ✅ SEL-001: Auto-select and hide dropdown for single-child families
   useEffect(() => {
-    console.log('🔍 ChildSelector Debug:', {
-      familyId,
-      childrenCount: children.length,
-      selectedChildId,
-      selectedChildName: selectedChild?.name,
-      loading,
-      children: children.map(c => ({ id: c.id, name: c.name }))
-    });
-  }, [children, selectedChildId, familyId, loading]);
+    if (children.length === 1 && !selectedChildId) {
+      // Auto-select the only child
+      setSelectedChildId(children[0].id);
+    }
+  }, [children, selectedChildId, setSelectedChildId]);
+
+  // ✅ SEL-001: Hide selector when only one child
+  if (children.length === 1 && selectedChild) {
+    return (
+      <div className="flex items-center gap-2" data-testid="single-child-display">
+        <span className="text-sm font-medium" data-testid="selected-child-name">
+          {selectedChild.name}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

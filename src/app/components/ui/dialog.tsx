@@ -81,7 +81,7 @@ export function DialogContent({ children, className = "" }: DialogContentProps) 
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               transition={{ type: "spring", duration: 0.3 }}
-              className={`relative bg-white rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto ${className}`}
+              className={`relative bg-white rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto p-6 ${className}`}
               onClick={(e) => e.stopPropagation()}
             >
               {/* Close button */}

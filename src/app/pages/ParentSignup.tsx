@@ -95,9 +95,11 @@ export function ParentSignup() {
         tokenLength: loginData.session.access_token.length
       });
 
-      // Supabase automatically stores the session - we don't need to manually store tokens
-      // Just set the mode
+      // Set parent mode - Supabase automatically stores the session
+      localStorage.setItem('user_role', 'parent');
+      localStorage.setItem('user_mode', 'parent');
       localStorage.setItem('fgs_mode', 'parent');
+      localStorage.setItem('fgs_user_id', loginData.session.user.id);
       
       navigate('/onboarding');
     } catch (error: any) {
@@ -200,9 +202,11 @@ export function ParentSignup() {
         duration: 5000
       });
 
-      // Supabase automatically stores the session
-      // Just set mode and pending flag
+      // Set parent mode - Supabase automatically stores the session
+      localStorage.setItem('user_role', 'parent');
+      localStorage.setItem('user_mode', 'parent');
       localStorage.setItem('fgs_mode', 'parent');
+      localStorage.setItem('fgs_user_id', loginData.session.user.id);
       localStorage.setItem('fgs_join_pending', 'true');
       
       navigate('/join-pending');

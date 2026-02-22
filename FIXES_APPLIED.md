@@ -1,121 +1,174 @@
-# ✅ Fixes Applied - February 19, 2026
+# 🔧 Fixes Applied
 
-## Issue: createBrowserRouter is not defined
-
-### Root Cause
-The `/src/app/routes.tsx` file was missing the necessary imports from `react-router` after a previous edit. Specifically:
-- `createBrowserRouter` import was missing
-- `Navigate` import was missing
-- All component imports were missing
-
-### Fix Applied
-✅ Restored all missing imports to `/src/app/routes.tsx`:
-- Added `import { createBrowserRouter, Navigate } from "react-router";`
-- Added all component imports (RootLayout, ProvidersLayout, DashboardRouter, etc.)
-- Added debug page imports (DebugAuth, JWTDebugTest, DebugStorage, SystemDiagnostics)
-
-### Verification
-✅ Verified NO files use `react-router-dom` (which doesn't work in this environment)
-✅ Confirmed ALL files correctly use `react-router` package (20 files checked)
-✅ `react-router` version 7.13.0 is installed in package.json
-
-### Files Modified
-1. `/src/app/routes.tsx` - Restored all imports
-
-### Files Created (Previous Session)
-1. `/src/app/pages/SystemDiagnostics.tsx` - Diagnostic tool for debugging kid login
-2. `/NETLIFY_DEPLOYMENT_GUIDE.md` - Comprehensive troubleshooting guide
-3. `/CURRENT_STATUS_AND_NEXT_STEPS.md` - Project status summary
+**Date**: 2026-02-21  
+**Issue**: Test failures due to data structure mismatch and Supabase client duplication
 
 ---
 
-## Current Status: ✅ FIXED
+## Issues Fixed
 
-The app should now load without errors. The router is properly configured with:
-- ✅ All public routes (login, signup, kid-login, welcome)
-- ✅ All protected routes (dashboard, settings, etc.)
-- ✅ Debug routes (system-diagnostics, debug-storage, etc.)
-- ✅ Proper authentication guards
-- ✅ Family requirement checks
+### 1. ❌ Child ID Undefined
+**Error**: `GET /children/undefined 401 (Unauthorized)`  
+**Root Cause**: Test was accessing `testEnv.familyA.children[0].id` but the field is `childId`
+
+**Fix**:
+```typescript
+// Before (WRONG):
+const childA1Id = testEnv.familyA.children[0].id;
+
+// After (CORRECT):
+const childA1 = testEnv.familyA.children[0];
+const childId = childA1.childId;
+```
+
+**Files Changed**:
+- `/src/tests/test-child-endpoint.ts`
 
 ---
 
-## Next Steps for Testing
+### 2. ⚠️ Multiple GoTrueClient Instances
+**Warning**: `Multiple GoTrueClient instances detected in the same browser context`  
+**Root Cause**: Test files were importing `createClient` directly from `@supabase/supabase-js` instead of using the singleton
 
-### 1. Test Parent Login Flow
-```bash
-# Navigate to your Netlify URL
-https://your-app.netlify.app/parent-login
+**Fix**:
+```typescript
+// Before (WRONG):
+import { createClient } from '@supabase/supabase-js';
+const supabase = createClient(`https://${projectId}.supabase.co`, publicAnonKey);
 
-# Create account or log in
-# Complete onboarding
-# Verify family ID is set in localStorage
+// After (CORRECT):
+import { supabase } from '../../utils/supabase/client';
 ```
 
-### 2. Test Kid Login Flow
-```bash
-# After parent has logged in at least once:
-https://your-app.netlify.app/kid-login
+**Files Changed**:
+- `/src/tests/test-child-endpoint.ts`
 
-# Should see children profiles
-# Enter PIN
-# Should log in successfully
-```
+**Note**: The following files already used the singleton correctly:
+- ✅ `/src/tests/setup-test-environment.ts`
+- ✅ `/src/tests/audit-test-environment.ts`
 
-### 3. Use Diagnostic Tools
-```bash
-# If issues occur, use:
-https://your-app.netlify.app/system-diagnostics
+---
 
-# This will show:
-# - Family ID status
-# - Backend connection
-# - Children loading
-# - Environment config
-# - Session state
+### 3. 🔍 Test Return Value Missing
+**Issue**: Test wasn't returning meaningful results for programmatic checks
+
+**Fix**: Added comprehensive return object:
+```typescript
+return {
+  childId,
+  healthOk: response3.ok,
+  authRequired: response2.status === 401,
+  authenticatedSuccess: response1.ok,
+  authenticatedStatus: response1.status,
+  authenticatedData: data1
+};
 ```
 
 ---
 
-## Router Package Usage Across Project
+## Test Data Structure Reference
 
-**Confirmed:** All 20 files using React Router are correctly importing from `react-router`:
+For future test development, the correct structure is:
 
-1. `/src/app/App.tsx` - RouterProvider
-2. `/src/app/routes.tsx` - createBrowserRouter, Navigate
-3. `/src/app/components/parent-mode/QuickActions.tsx` - Link
-4. `/src/app/components/mobile/FloatingActionButton.tsx` - Link
-5. `/src/app/components/ProtectedRoute.tsx` - Navigate
-6. `/src/app/components/AuthErrorBanner.tsx` - useNavigate
-7. `/src/app/pages/Dashboard.tsx` - Link
-8. `/src/app/pages/Onboarding.tsx` - * as ReactRouter
-9. `/src/app/pages/Settings.tsx` - useNavigate
-10. `/src/app/pages/Quizzes.tsx` - useNavigate
-11. `/src/app/pages/QuizPlay.tsx` - useParams, useNavigate
-12. `/src/app/pages/QuizStats.tsx` - useParams, useNavigate
-13. `/src/app/pages/KidDashboard.tsx` - useNavigate
-14. `/src/app/pages/ParentDashboard.tsx` - Link
-15. `/src/app/pages/ParentSignup.tsx` - useNavigate
-16. `/src/app/pages/ParentLogin.tsx` - useNavigate
-17. `/src/app/pages/KidLogin.tsx` - useNavigate
-18. `/src/app/pages/Welcome.tsx` - useNavigate
-19. `/src/app/pages/TitlesBadgesPage.tsx` - useNavigate
-20. `/src/app/pages/SadqaPage.tsx` - useNavigate
-21. `/src/app/pages/DebugStorage.tsx` - useNavigate
+```typescript
+interface TestEnvironment {
+  familyA: TestFamily;
+  familyB: TestFamily;
+  setupTimestamp: string;
+}
 
-**Result:** ✅ No files use `react-router-dom` - all correctly use `react-router`
+interface TestFamily {
+  familyId: string;
+  familyName: string;
+  inviteCode: string;
+  parents: TestParent[];
+  children: TestChild[];  // ← Array of children
+}
+
+interface TestChild {
+  childId: string;  // ← Use 'childId', not 'id'
+  name: string;
+  pin: string;
+  pinHash: string;
+  avatar: string;
+  currentPoints: number;
+}
+
+interface TestParent {
+  userId: string;
+  email: string;
+  password: string;
+  name: string;
+}
+```
+
+**Access Pattern**:
+```typescript
+const testEnv = JSON.parse(localStorage.getItem('fgs_test_environment'));
+
+// ✅ CORRECT:
+const childId = testEnv.familyA.children[0].childId;
+const childName = testEnv.familyA.children[0].name;
+
+// ❌ WRONG:
+const childId = testEnv.familyA.children[0].id;  // 'id' doesn't exist!
+```
 
 ---
 
-## Summary
+## Next Steps
 
-**Status:** ✅ **FIXED**  
-**Cause:** Missing imports in routes.tsx  
-**Solution:** Restored all imports from react-router  
-**Verified:** All files use correct package  
-**Ready:** Yes, app should load without errors  
+### After These Fixes:
+
+1. **Click "Test Child Endpoint"** button again
+   - Should now show: `Child ID: child:xxxxxxxxx` (not undefined)
+   - Should show: `Child Name: Kid A1`
+
+2. **Expected Output** (if "Verify JWT" is disabled):
+   ```
+   ✅ Health endpoint: OK
+   ✅ Auth required: YES
+   ✅ Authenticated access: SUCCESS
+   ```
+
+3. **If Still 401**: Go to Supabase Dashboard and disable "Verify JWT"
+
+4. **Once Working**: Run full audit with "Audit Test Environment"
 
 ---
 
-**Updated:** February 19, 2026  
-**Next Action:** Deploy and test on Netlify
+## Verification Commands
+
+### Quick Manual Test:
+```javascript
+// In browser console:
+const testEnv = JSON.parse(localStorage.getItem('fgs_test_environment'));
+console.log('Child ID:', testEnv.familyA.children[0].childId);
+console.log('Child Name:', testEnv.familyA.children[0].name);
+console.log('Family ID:', testEnv.familyA.familyId);
+
+// Should output:
+// Child ID: child:1771644029229
+// Child Name: Kid A1
+// Family ID: family:1771644027771
+```
+
+---
+
+## Files Modified
+
+1. ✅ `/src/tests/test-child-endpoint.ts` - Fixed childId access and Supabase singleton
+2. 📝 `/FIXES_APPLIED.md` - This file (documentation)
+
+---
+
+## Status
+
+- ✅ Child ID undefined - **FIXED**
+- ✅ Multiple Supabase clients - **FIXED**
+- ✅ Test return value - **FIXED**
+- ⏳ 401 on authenticated endpoint - **Waiting for "Verify JWT" to be disabled**
+
+---
+
+**Last Updated**: 2026-02-21 03:25 UTC

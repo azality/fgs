@@ -10,6 +10,7 @@ import { supabase } from '../../../utils/supabase/client';
 import { useAuth } from '../contexts/AuthContext';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info.tsx';
 import { setParentSession } from '../utils/authHelpers';
+import { isPushNotificationsSupported, initializePushNotifications } from '../utils/pushNotifications';
 
 export function ParentLogin() {
   const navigate = useNavigate();
@@ -108,6 +109,19 @@ export function ParentLogin() {
             await new Promise(resolve => setTimeout(resolve, 100));
             
             toast.success('Welcome back!');
+            
+            // Initialize push notifications (non-blocking)
+            if (isPushNotificationsSupported()) {
+              try {
+                console.log('📬 Initializing push notifications...');
+                await initializePushNotifications(data.user.id);
+                console.log('✅ Push notifications initialized');
+              } catch (pushError) {
+                // Non-blocking - don't prevent login if push fails
+                console.warn('⚠️ Failed to initialize push notifications:', pushError);
+              }
+            }
+            
             navigate('/');
             return;
           } else {

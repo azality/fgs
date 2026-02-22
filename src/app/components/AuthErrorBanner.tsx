@@ -57,6 +57,16 @@ export function AuthErrorBanner() {
 
   const checkSession = async () => {
     try {
+      // CRITICAL: Don't check Supabase session if in kid mode
+      const userRole = localStorage.getItem('user_role');
+      const userMode = localStorage.getItem('user_mode');
+      
+      if (userRole === 'child' || userMode === 'kid') {
+        console.log('👶 Kid mode detected - skipping Supabase session check in AuthErrorBanner');
+        setShowBanner(false);
+        return;
+      }
+      
       const { data: { session }, error } = await supabase.auth.getSession();
       
       if (error || !session) {

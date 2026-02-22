@@ -2,13 +2,14 @@ import { Outlet, Link, useLocation, useNavigate } from "react-router";
 import { ChildSelector } from "../components/ChildSelector";
 import { ModeSwitcher } from "../components/ModeSwitcher";
 import { AuthErrorBanner } from "../components/AuthErrorBanner";
-import { Home, FileText, BarChart3, Settings, Calendar, Gift, Shield, Users, Menu, X, Trophy, Sliders, Edit, Brain, LogOut } from "lucide-react";
+import { Home, FileText, BarChart3, Settings, Calendar, Gift, Shield, Users, Menu, X, Trophy, Sliders, Edit, Brain, LogOut, Compass, Briefcase } from "lucide-react";
 import { cn } from "../components/ui/utils";
 import { useViewMode } from "../contexts/ViewModeContext";
 import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { toast } from "sonner";
 import { useAuth } from "../contexts/AuthContext";
+import { AppModeGuard } from "../components/AppModeGuard";
 
 const parentNavigation = [
   { name: 'Dashboard', href: '/', icon: Home, childAccess: true },
@@ -59,8 +60,18 @@ export function RootLayout() {
           <div className="flex items-center justify-between h-14 sm:h-16">
             <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0">
               <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
-                <Users className="h-5 w-5 sm:h-6 sm:w-6 text-primary flex-shrink-0 transition-colors" />
-                <h1 className="text-sm sm:text-xl font-bold truncate text-foreground transition-colors">Family Growth System</h1>
+                {/* Dynamic branding based on view mode */}
+                {isKidMode ? (
+                  <>
+                    <Compass className="h-5 w-5 sm:h-6 sm:w-6 text-[#F4C430] flex-shrink-0 transition-colors" />
+                    <h1 className="text-sm sm:text-xl font-bold truncate bg-gradient-to-r from-[#F4C430] to-[#FFD700] bg-clip-text text-transparent transition-colors">Adventure Quest</h1>
+                  </>
+                ) : (
+                  <>
+                    <Briefcase className="h-5 w-5 sm:h-6 sm:w-6 text-blue-600 flex-shrink-0 transition-colors" />
+                    <h1 className="text-sm sm:text-xl font-bold truncate text-blue-600 transition-colors">Parent Command Center</h1>
+                  </>
+                )}
               </div>
             </div>
             
@@ -207,7 +218,9 @@ export function RootLayout() {
 
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 mb-16 sm:mb-0">
-        <Outlet />
+        <AppModeGuard>
+          <Outlet />
+        </AppModeGuard>
       </main>
 
       {/* Footer - Hidden on mobile */}

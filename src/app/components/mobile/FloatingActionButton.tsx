@@ -1,17 +1,35 @@
 import { motion, AnimatePresence } from "motion/react";
-import { useState } from "react";
-import { Plus, X, Zap, Award, Heart, BookOpen } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Plus, X, Zap, Award, Heart, BookOpen, Sparkles, Gift } from "lucide-react";
 import { Link } from "react-router";
 
 export function FloatingActionButton() {
   const [isOpen, setIsOpen] = useState(false);
+  const [isKidMode, setIsKidMode] = useState(false);
 
-  const actions = [
+  // Detect if we're in kid mode
+  useEffect(() => {
+    const userRole = localStorage.getItem('user_role');
+    const userMode = localStorage.getItem('user_mode');
+    setIsKidMode(userRole === 'child' || userMode === 'kid');
+  }, []);
+
+  // Parent mode actions
+  const parentActions = [
     { label: "Log Behavior", icon: Zap, href: "/log", color: "bg-blue-500" },
     { label: "Rewards", icon: Award, href: "/rewards", color: "bg-purple-500" },
     { label: "Challenges", icon: Heart, href: "/challenges", color: "bg-pink-500" },
     { label: "Quizzes", icon: BookOpen, href: "/quizzes", color: "bg-green-500" },
   ];
+
+  // Kid mode actions
+  const kidActions = [
+    { label: "My Wishlist", icon: Gift, href: "/kid/wishlist", color: "bg-blue-500" },
+    { label: "My Quests", icon: Heart, href: "/kid/home", color: "bg-purple-500" },
+    { label: "My Journey", icon: Sparkles, href: "/kid/home", color: "bg-pink-500" },
+  ];
+
+  const actions = isKidMode ? kidActions : parentActions;
 
   return (
     <div className="sm:hidden fixed bottom-20 right-4 z-40">

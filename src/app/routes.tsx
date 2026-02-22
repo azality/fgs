@@ -24,18 +24,20 @@ import { Onboarding } from "./pages/Onboarding";
 import { JoinPending } from "./pages/JoinPending";
 import { KidDashboard } from "./pages/KidDashboard";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { RequireParentRole } from "./components/RequireParentRole";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { DebugAuth } from "./pages/DebugAuth";
-import { JWTDebugTest } from "./pages/JWTDebugTest";
-import { DebugStorage } from "./pages/DebugStorage";
-import { SystemDiagnostics } from "./pages/SystemDiagnostics";
 import { ParentWishlistReview } from "./pages/ParentWishlistReview";
 import { PendingRedemptionRequests } from "./pages/PendingRedemptionRequests";
 import { KidWishlist } from "./pages/KidWishlist";
+import { PrayerLogging } from "./pages/PrayerLogging";
+import { PrayerApprovals } from "./pages/PrayerApprovals";
 import { useState, useEffect } from "react";
 import { supabase } from "../../utils/supabase/client";
 import { projectId, publicAnonKey } from "../../utils/supabase/info";
 import { getCurrentMode } from "./utils/auth";
+import { useFamilyContext } from "./contexts/FamilyContext";
+import { AppModeGuard } from "./components/AppModeGuard";
+import { getAppMode, getDefaultRoute } from "./utils/appMode";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f`;
 
@@ -64,6 +66,7 @@ function RequireKidAuth({ children }: { children: JSX.Element }) {
 function RequireFamily({ children }: { children: JSX.Element }) {
   const [loading, setLoading] = useState(true);
   const [hasFamilyAccess, setHasFamilyAccess] = useState(false);
+  const { setFamilyId } = useFamilyContext();
 
   useEffect(() => {
     const checkFamilyAccess = async () => {
@@ -73,6 +76,8 @@ function RequireFamily({ children }: { children: JSX.Element }) {
         
         if (cachedFamilyId) {
           console.log('✅ RequireFamily: Found cached family ID:', cachedFamilyId);
+          // CRITICAL: Set the familyId in FamilyContext so it loads children!
+          setFamilyId(cachedFamilyId);
           setHasFamilyAccess(true);
           setLoading(false);
           return;
@@ -91,7 +96,7 @@ function RequireFamily({ children }: { children: JSX.Element }) {
     };
 
     checkFamilyAccess();
-  }, []);
+  }, [setFamilyId]);
 
   // Show loading state while checking
   if (loading) {
@@ -164,22 +169,23 @@ export const router = createBrowserRouter([
         element: <RootLayout />,
         children: [
           { index: true, element: <DashboardRouter /> },
-          { path: "log", element: <LogBehavior /> },
-          { path: "challenges", element: <Challenges /> },
-          { path: "review", element: <WeeklyReview /> },
-          { path: "adjustments", element: <Adjustments /> },
-          { path: "attendance", element: <AttendanceNew /> },
-          { path: "rewards", element: <Rewards /> },
-          { path: "audit", element: <AuditTrail /> },
-          { path: "settings", element: <Settings /> },
-          { path: "edit-requests", element: <EditRequests /> },
+          { path: "log", element: <RequireParentRole><LogBehavior /></RequireParentRole> },
+          { path: "review", element: <RequireParentRole><WeeklyReview /></RequireParentRole> },
+          { path: "adjustments", element: <RequireParentRole><Adjustments /></RequireParentRole> },
+          { path: "attendance", element: <RequireParentRole><AttendanceNew /></RequireParentRole> },
+          { path: "rewards", element: <RequireParentRole><Rewards /></RequireParentRole> },
+          { path: "audit", element: <RequireParentRole><AuditTrail /></RequireParentRole> },
+          { path: "settings", element: <RequireParentRole><Settings /></RequireParentRole> },
+          { path: "edit-requests", element: <RequireParentRole><EditRequests /></RequireParentRole> },
           { path: "quizzes", element: <Quizzes /> },
           { path: "quizzes/:id/play", element: <QuizPlay /> },
           { path: "quizzes/:id/stats", element: <QuizStats /> },
+          { path: "wishlist", element: <RequireParentRole><ParentWishlistReview /></RequireParentRole> },
+          { path: "redemption-requests", element: <RequireParentRole><PendingRedemptionRequests /></RequireParentRole> },
+          { path: "challenges", element: <Challenges /> },
           { path: "titles-badges", element: <TitlesBadgesPage /> },
           { path: "sadqa", element: <SadqaPage /> },
-          { path: "wishlist", element: <ParentWishlistReview /> },
-          { path: "redemption-requests", element: <PendingRedemptionRequests /> },
+          { path: "prayer-approvals", element: <RequireParentRole><PrayerApprovals /></RequireParentRole> },
           // Redirect old routes to homepage
           { path: "kid", element: <Navigate to="/" replace /> },
           { path: "parent", element: <Navigate to="/" replace /> },
@@ -196,28 +202,11 @@ export const router = createBrowserRouter([
     element: <RequireKidAuth><ProvidersLayout><KidDashboard /></ProvidersLayout></RequireKidAuth>,
   },
   {
-    path: "/kid/dashboard",
-    element: <RequireKidAuth><ProvidersLayout><KidDashboard /></ProvidersLayout></RequireKidAuth>,
-  },
-  {
     path: "/kid/wishlist",
     element: <RequireKidAuth><ProvidersLayout><KidWishlist /></ProvidersLayout></RequireKidAuth>,
   },
-  // Debug route
   {
-    path: "/debug-auth",
-    element: <DebugAuth />,
-  },
-  {
-    path: "/debug-jwt",
-    element: <JWTDebugTest />,
-  },
-  {
-    path: "/debug-storage",
-    element: <DebugStorage />,
-  },
-  {
-    path: "/system-diagnostics",
-    element: <SystemDiagnostics />,
+    path: "/kid/prayers",
+    element: <RequireKidAuth><ProvidersLayout><PrayerLogging /></ProvidersLayout></RequireKidAuth>,
   },
 ]);

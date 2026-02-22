@@ -42,7 +42,7 @@ interface AttendanceRecord {
   childId: string;
   providerId: string;
   classDate: string;
-  attended: boolean;
+  status: 'present' | 'absent' | 'excused' | 'late'; // Changed from attended: boolean
   loggedBy: string;
 }
 
@@ -51,8 +51,8 @@ const ACTIVITY_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#98D8C8", 
 const ACTIVITY_ICONS = ["⚽", "🏊", "🥋", "🎨", "🎸", "📚", "🎯", "⚡", "🏀", "🎭"];
 
 export function AttendanceNew() {
-  const { isParentMode, accessToken } = useAuth();
-  const { getCurrentChild, attendanceRecords: contextAttendance } = useFamily();
+  const { isParentMode, accessToken, refreshSession } = useAuth();
+  const { getCurrentChild, attendanceRecords: contextAttendance, loading: familyLoading } = useFamily();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,6 +80,16 @@ export function AttendanceNew() {
   const [attended, setAttended] = useState(true);
   
   const child = getCurrentChild();
+
+  useEffect(() => {
+    // Refresh session on mount to ensure we have a valid token
+    const initSession = async () => {
+      console.log('🔄 AttendanceNew: Initializing session...');
+      await refreshSession();
+    };
+    
+    initSession();
+  }, []); // Run once on mount
 
   useEffect(() => {
     loadProviders();
@@ -133,7 +143,7 @@ export function AttendanceNew() {
     }
   };
 
-  const loadProviders = async () => {
+  const loadProviders = async (retryCount = 0) => {
     if (!accessToken) {
       console.log('AttendanceNew: Waiting for authentication...');
       setLoading(false);
@@ -141,36 +151,74 @@ export function AttendanceNew() {
     }
 
     try {
+      console.log('AttendanceNew: Loading providers with token:', accessToken?.substring(0, 20) + '...');
       const response = await fetch(
         `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/providers`,
         { headers: { 'Authorization': `Bearer ${accessToken}` } }
       );
       
       if (!response.ok) {
-        throw new Error(`Failed to load providers: ${response.status}`);
+        const errorText = await response.text();
+        console.error('Provider load failed:', { status: response.status, error: errorText });
+        
+        // If 401 and haven't retried yet, refresh session and retry
+        if (response.status === 401 && retryCount === 0) {
+          console.log('🔄 Got 401, refreshing session and retrying...');
+          toast.loading('Refreshing session...', { id: 'session-refresh' });
+          await refreshSession();
+          toast.dismiss('session-refresh');
+          
+          // Wait a moment for new token to be set
+          setTimeout(() => loadProviders(1), 500);
+          return;
+        }
+        
+        throw new Error(`Failed to load providers: ${response.status} - ${errorText}`);
       }
       
       const data = await response.json();
       setProviders(data || []);
     } catch (error) {
       console.error('Load providers error:', error);
-      toast.error('Failed to load activities');
+      
+      if (retryCount === 0) {
+        toast.error('Failed to load activities. Refreshing session...');
+      } else {
+        toast.error('Failed to load activities. Please try logging in again.');
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const loadAttendance = async () => {
+  const loadAttendance = async (retryCount = 0) => {
     if (!child || !accessToken) return;
     try {
       const response = await fetch(
         `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/children/${child.id}/attendance`,
         { headers: { 'Authorization': `Bearer ${accessToken}` } }
       );
+      
+      // Handle 401 by refreshing session
+      if (response.status === 401 && retryCount === 0) {
+        console.log('🔄 Got 401 on attendance, refreshing session and retrying...');
+        await refreshSession();
+        setTimeout(() => loadAttendance(1), 500);
+        return;
+      }
+      
       const data = await response.json();
-      setAttendanceRecords(data || []);
+      
+      // Ensure data is an array before setting state
+      if (Array.isArray(data)) {
+        setAttendanceRecords(data);
+      } else {
+        console.error('Attendance data is not an array:', data);
+        setAttendanceRecords([]);
+      }
     } catch (error) {
       console.error('Load attendance error:', error);
+      setAttendanceRecords([]); // Set to empty array on error
     }
   };
 
@@ -272,6 +320,34 @@ export function AttendanceNew() {
     }
   };
 
+  const handleDeleteAttendance = async (id: string) => {
+    if (!accessToken) {
+      toast.error('Authentication required');
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/attendance/${id}`,
+        {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        }
+      );
+
+      if (response.ok) {
+        toast.success('Attendance record deleted');
+        loadAttendance();
+      } else {
+        const errorData = await response.json();
+        toast.error(errorData.error || 'Failed to delete attendance record');
+      }
+    } catch (error) {
+      console.error('Delete attendance error:', error);
+      toast.error('Failed to delete attendance record');
+    }
+  };
+
   const handleLogAttendance = async () => {
     if (!selectedDate) {
       toast.error("Please select a date");
@@ -294,6 +370,39 @@ export function AttendanceNew() {
     }
 
     try {
+      // Format date in local timezone to avoid timezone shift issues
+      const year = selectedDate.getFullYear();
+      const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+      const day = String(selectedDate.getDate()).padStart(2, '0');
+      const classDate = `${year}-${month}-${day}`;
+      
+      // Check for duplicate attendance record
+      const existingRecord = attendanceRecords.find(
+        r => r.childId === child.id && 
+             r.providerId === selectedProvider && 
+             r.classDate === classDate
+      );
+      
+      if (existingRecord) {
+        const provider = providers.find(p => p.id === selectedProvider);
+        const statusText = existingRecord.status === 'present' ? 'present' : 'absent';
+        toast.error(
+          `Attendance already logged for ${provider?.name} on ${format(selectedDate, 'MMM d, yyyy')} (marked as ${statusText}). Please delete the existing record first if you need to change it.`,
+          { duration: 5000 }
+        );
+        return;
+      }
+      
+      const requestBody = {
+        childId: child.id,
+        providerId: selectedProvider,
+        classDate: classDate,
+        status: attended ? 'present' : 'absent', // Changed from attended boolean to status string
+        loggedBy: 'parent1'
+      };
+      
+      console.log('📝 Logging attendance:', requestBody);
+      
       const response = await fetch(
         `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f/attendance`,
         {
@@ -302,20 +411,27 @@ export function AttendanceNew() {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${accessToken}`
           },
-          body: JSON.stringify({
-            childId: child.id,
-            providerId: selectedProvider,
-            classDate: selectedDate.toISOString(),
-            attended,
-            loggedBy: 'parent1'
-          })
+          body: JSON.stringify(requestBody)
         }
       );
 
+      const responseData = await response.json();
+      
       if (response.ok) {
+        console.log('✅ Attendance logged successfully:', responseData);
         toast.success(`Attendance logged for ${child.name}`);
         setSelectedProvider("");
         loadAttendance();
+      } else {
+        console.error('❌ Attendance logging failed:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: responseData
+        });
+        
+        // Show detailed error message
+        const errorMsg = responseData.error || responseData.details?.join(', ') || responseData.errors?.join(', ') || 'Failed to log attendance';
+        toast.error(`Error: ${errorMsg}`);
       }
     } catch (error) {
       console.error('Log attendance error:', error);
@@ -372,7 +488,7 @@ export function AttendanceNew() {
     const records = attendanceRecords.filter(r => 
       r.childId === child?.id &&
       r.providerId === providerId &&
-      r.attended &&
+      r.status === 'present' && // Changed from r.attended to r.status === 'present'
       new Date(r.classDate) >= startDate &&
       new Date(r.classDate) <= endDate
     );
@@ -520,7 +636,7 @@ export function AttendanceNew() {
     );
   }
 
-  if (loading) {
+  if (loading || familyLoading) {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
@@ -883,70 +999,86 @@ export function AttendanceNew() {
       </Card>
 
       {/* Log Attendance & Billing */}
-      <div className="grid gap-6 md:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-3">
         {/* Log Attendance */}
-        <Card>
+        <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle>Log Attendance</CardTitle>
             <CardDescription>Record class attendance for {child.name}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label>Class Date</Label>
-              <CalendarComponent
-                mode="single"
-                selected={selectedDate}
-                onSelect={setSelectedDate}
-                className="rounded-md border"
-              />
-            </div>
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Class Date</Label>
+                <CalendarComponent
+                  mode="single"
+                  selected={selectedDate}
+                  onSelect={setSelectedDate}
+                  className="rounded-md border w-full"
+                  modifiers={{
+                    hasAttendance: attendanceRecords
+                      .filter(r => r.childId === child.id)
+                      .map(r => {
+                        // Parse date string without timezone conversion
+                        const [year, month, day] = r.classDate.split('-').map(Number);
+                        return new Date(year, month - 1, day);
+                      })
+                  }}
+                  modifiersClassNames={{
+                    hasAttendance: "relative after:content-[''] after:absolute after:bottom-1 after:left-1/2 after:-translate-x-1/2 after:w-1 after:h-1 after:bg-blue-600 after:rounded-full"
+                  }}
+                />
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="provider">Activity</Label>
-              <Select value={selectedProvider} onValueChange={setSelectedProvider}>
-                <SelectTrigger id="provider">
-                  <SelectValue placeholder="Select activity..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {providers.map(provider => (
-                    <SelectItem key={provider.id} value={provider.id}>
-                      {provider.icon} {provider.name} - ${provider.ratePerClass}/class
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="provider">Activity</Label>
+                  <Select value={selectedProvider} onValueChange={setSelectedProvider}>
+                    <SelectTrigger id="provider">
+                      <SelectValue placeholder="Select activity..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {providers.map(provider => (
+                        <SelectItem key={provider.id} value={provider.id}>
+                          {provider.icon} {provider.name} - ${provider.ratePerClass}/class
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-            <div className="space-y-2">
-              <Label>Status</Label>
-              <div className="flex gap-2">
-                <Button
-                  variant={attended ? "default" : "outline"}
-                  onClick={() => setAttended(true)}
-                  className="flex-1"
-                >
-                  <Check className="h-4 w-4 mr-2" />
-                  Present
-                </Button>
-                <Button
-                  variant={!attended ? "destructive" : "outline"}
-                  onClick={() => setAttended(false)}
-                  className="flex-1"
-                >
-                  <X className="h-4 w-4 mr-2" />
-                  Absent
+                <div className="space-y-2">
+                  <Label>Status</Label>
+                  <div className="flex gap-2">
+                    <Button
+                      variant={attended ? "default" : "outline"}
+                      onClick={() => setAttended(true)}
+                      className="flex-1"
+                    >
+                      <Check className="h-4 w-4 mr-2" />
+                      Present
+                    </Button>
+                    <Button
+                      variant={!attended ? "destructive" : "outline"}
+                      onClick={() => setAttended(false)}
+                      className="flex-1"
+                    >
+                      <X className="h-4 w-4 mr-2" />
+                      Absent
+                    </Button>
+                  </div>
+                </div>
+
+                <Button onClick={handleLogAttendance} className="w-full">
+                  Log Attendance
                 </Button>
               </div>
             </div>
-
-            <Button onClick={handleLogAttendance} className="w-full">
-              Log Attendance
-            </Button>
           </CardContent>
         </Card>
 
         {/* Billing Summary */}
-        <Card>
+        <Card className="lg:col-span-1">
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -991,7 +1123,7 @@ export function AttendanceNew() {
               const count = attendanceRecords.filter(r => 
                 r.childId === child.id &&
                 r.providerId === provider.id &&
-                r.attended &&
+                r.status === 'present' && // Changed from r.attended
                 new Date(r.classDate) >= monthStart &&
                 new Date(r.classDate) <= monthEnd
               ).length;
@@ -1077,14 +1209,19 @@ export function AttendanceNew() {
                   <TableHead>Activity</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Cost</TableHead>
+                  <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {attendanceRecords.slice(0, 10).map((record) => {
                   const provider = providers.find(p => p.id === record.providerId);
+                  // Parse date string directly to avoid timezone conversion
+                  const [year, month, day] = record.classDate.split('-').map(Number);
+                  const displayDate = new Date(year, month - 1, day);
+                  
                   return (
                     <TableRow key={record.id}>
-                      <TableCell>{format(new Date(record.classDate), 'MMM d, yyyy')}</TableCell>
+                      <TableCell>{format(displayDate, 'MMM d, yyyy')}</TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <span>{provider?.icon}</span>
@@ -1092,12 +1229,40 @@ export function AttendanceNew() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={record.attended ? "default" : "destructive"}>
-                          {record.attended ? 'Present' : 'Absent'}
+                        <Badge variant={record.status === 'present' ? "default" : "destructive"}>
+                          {record.status === 'present' ? 'Present' : 'Absent'}
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        {record.attended ? `$${provider?.ratePerClass || 0}` : '$0'}
+                        {record.status === 'present' ? `$${provider?.ratePerClass || 0}` : '$0'}
+                      </TableCell>
+                      <TableCell>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="gap-2 bg-white border-red-300 text-red-900 hover:bg-red-100"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Delete
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Delete Attendance Record?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This will permanently delete this attendance record.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction onClick={() => handleDeleteAttendance(record.id)}>
+                                Delete
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </TableCell>
                     </TableRow>
                   );

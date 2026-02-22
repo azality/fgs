@@ -488,6 +488,16 @@ function QuickActionsCard() {
             </Button>
           </Link>
 
+          <Link to="/prayer-approvals">
+            <Button variant="outline" className="w-full h-auto py-4 flex flex-col items-center gap-2 hover:bg-white">
+              <span className="text-2xl">🕌</span>
+              <div className="text-center">
+                <p className="font-semibold">Prayer Approvals</p>
+                <p className="text-xs text-muted-foreground">Review prayer claims</p>
+              </div>
+            </Button>
+          </Link>
+
           <Link to="/rewards">
             <Button variant="outline" className="w-full h-auto py-4 flex flex-col items-center gap-2 hover:bg-white">
               <Gift className="h-6 w-6 text-purple-600" />

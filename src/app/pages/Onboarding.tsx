@@ -4,13 +4,15 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { toast } from "sonner";
 import { createFamily, createChild, initializeDefaultData, setTemporaryToken, joinFamilyByCode } from "../../utils/api";
 import { signup, login } from "../../utils/auth";
 import { useAuth } from "../contexts/AuthContext";
-import { Users, UserPlus, Mail, Lock, User, Copy, Check } from "lucide-react";
+import { Users, UserPlus, Mail, Lock, User, Copy, Check, Globe } from "lucide-react";
 import { projectId, publicAnonKey } from '/utils/supabase/info.tsx';
 import { supabase } from '/utils/supabase/client';
+import { COMMON_TIMEZONES, getUserTimezone } from '../utils/timezone';
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f`;
 
@@ -23,6 +25,7 @@ export function Onboarding() {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [familyName, setFamilyName] = useState("");
+  const [familyTimezone, setFamilyTimezone] = useState(getUserTimezone());
   const [familyId, setFamilyId] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [childName, setChildName] = useState("");
@@ -208,7 +211,7 @@ export function Onboarding() {
       });
       
       // Create family
-      const family = await createFamily(familyName, [currentUserId]);
+      const family = await createFamily(familyName, [currentUserId], familyTimezone);
       setFamilyId(family.id);
       
       // Cache family ID immediately
@@ -527,6 +530,27 @@ export function Onboarding() {
                     onChange={(e) => setFamilyName(e.target.value)}
                     onKeyPress={(e) => e.key === 'Enter' && handleCreateFamily()}
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="familyTimezone">Timezone</Label>
+                  <Select
+                    value={familyTimezone}
+                    onValueChange={setFamilyTimezone}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select timezone">
+                        {familyTimezone}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent className="w-full">
+                      {COMMON_TIMEZONES.map((tz) => (
+                        <SelectItem key={tz} value={tz}>
+                          {tz}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
