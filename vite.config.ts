@@ -18,16 +18,6 @@ export default defineConfig({
     },
   },
 
-  // Exclude test folders from production build transforms
-  // NOTE: This helps prevent Vite/esbuild from transforming these files if they’re discovered.
-  // If a test file is directly imported by production code, you must remove that import too.
-  esbuild: {
-    exclude: [
-      /src\/app\/tests\//,
-      /src\/tests\//,
-    ],
-  },
-
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
 })
