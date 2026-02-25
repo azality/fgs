@@ -12,6 +12,7 @@ export function TestControlPanel() {
   const [isOpen, setIsOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [lastResult, setLastResult] = useState<string>('');
+  const IS_DEV = import.meta.env.DEV;
 
   // Handle ESC key to close panel
   useEffect(() => {
