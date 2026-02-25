@@ -21,6 +21,7 @@ export function TestControlPanel() {
         setIsOpen(false);
       }
     };
+    if (!IS_DEV) return null;
     
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
