@@ -5,8 +5,8 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [
-    // The React and Tailwind plugins are both required for Make, even if
-    // Tailwind is not being actively used – do not remove them
+    // The React and Tailwind plugins are both required for Make,
+    // even if Tailwind is not being actively used – do not remove them.
     react(),
     tailwindcss(),
   ],
@@ -18,7 +18,9 @@ export default defineConfig({
     },
   },
 
-  // 🚫 Exclude test folders from production build
+  // Exclude test folders from production build transforms
+  // NOTE: This helps prevent Vite/esbuild from transforming these files if they’re discovered.
+  // If a test file is directly imported by production code, you must remove that import too.
   esbuild: {
     exclude: [
       /src\/app\/tests\//,
