@@ -1,5 +1,7 @@
 import { projectId, publicAnonKey } from '/utils/supabase/info.tsx';
 import { supabase } from '/utils/supabase/client';
+import { Capacitor } from '@capacitor/core';
+import { CapacitorHttp } from '@capacitor/core';
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-f116e23f`;
 
@@ -27,346 +29,302 @@ function redirectToLogin(reason: string) {
     console.log('⏭️ Already redirecting to login, skipping duplicate redirect');
     return;
   }
-  
+
   isRedirecting = true;
   console.log('🚪 IMMEDIATE REDIRECT TO LOGIN:', reason);
-  
-  // Clear all auth data FIRST
+
   try {
-    localStorage.clear(); // Clear everything to ensure clean state
+    localStorage.clear();
   } catch (e) {
     console.error('Error clearing localStorage:', e);
   }
-  
-  // IMMEDIATE redirect - no setTimeout, no delays
+
   console.log('🔄 Executing window.location.replace to /parent-login');
   window.location.replace('/parent-login');
-  
-  // This line should never be reached, but just in case, throw error to stop execution
+
+  // stop execution
   throw new Error('REDIRECTING_TO_LOGIN');
+}
+
+// Get best token for request (kid token first, else supabase session)
+async function getAccessTokenForRequest(): Promise<{ token: string | null; source: string }> {
+  // ✅ kid token wins
+  const kidToken =
+    localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
+  if (kidToken) {
+    console.log('👶 Kid mode detected - using kid access token for API call:', {
+      tokenPreview: `${kidToken.substring(0, 30)}...`,
+    });
+    return { token: kidToken, source: 'kid-session' };
+  }
+
+  // parent mode uses supabase session
+  try {
+    const { data: { session }, error } = await supabase.auth.getSession();
+
+    if (error) {
+      console.warn('⚠️ Error getting session:', error.message);
+    }
+
+    if (session?.access_token) {
+      // validate expiration
+      const expiresAt = session.expires_at;
+      const now = Math.floor(Date.now() / 1000);
+      const isExpired = !!expiresAt && expiresAt < now;
+
+      if (isExpired) {
+        console.warn('⚠️ Token expired, refreshing before request...');
+        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+
+        if (refreshError || !refreshData.session?.access_token) {
+          console.error('❌ Token refresh failed:', refreshError?.message);
+
+          // deleted user safety
+          const msg = refreshError?.message || '';
+          if (
+            msg.includes('user_not_found') ||
+            msg.includes('User from sub claim in JWT does not exist')
+          ) {
+            console.error('🚨 CRITICAL: User account deleted but session still exists!');
+            await supabase.auth.signOut();
+            redirectToLogin('User account deleted');
+          }
+
+          await supabase.auth.signOut();
+          redirectToLogin('Token refresh failed');
+        }
+
+        return { token: refreshData.session.access_token, source: 'refreshed-session' };
+      }
+
+      return { token: session.access_token, source: 'supabase-session' };
+    }
+
+    // fallback: try refresh if no session token
+    const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+    if (!refreshError && refreshData.session?.access_token) {
+      console.log('✅ Session refreshed (no session initially)');
+      return { token: refreshData.session.access_token, source: 'refreshed-session' };
+    }
+  } catch (e) {
+    console.error('❌ Error getting token:', e);
+  }
+
+  // fallback to temp cache
+  if (temporaryTokenCache) {
+    console.warn(
+      '⚠️ Using temporary token cache fallback (should only happen right after login)'
+    );
+    return { token: temporaryTokenCache, source: 'temporary-cache' };
+  }
+
+  return { token: null, source: 'none' };
+}
+
+// Validate JWT format (skip for kid tokens)
+function assertValidToken(token: string, source: string) {
+  if (source === 'kid-session') {
+    console.log('✅ Kid token detected - skipping JWT format validation');
+    return;
+  }
+
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    console.error('❌ Invalid JWT format:', {
+      parts: parts.length,
+      source,
+      tokenPreview: token.substring(0, 50) + '...',
+      isAnonKey: token === publicAnonKey,
+    });
+
+    if (source === 'temporary-cache') {
+      console.log('🗑️ Clearing invalid temporary token cache');
+      temporaryTokenCache = null;
+    }
+
+    redirectToLogin('Invalid JWT format');
+  }
+}
+
+// Shared request executor (native uses CapacitorHttp, web uses fetch)
+async function executeRequest(
+  url: string,
+  options: RequestInit,
+  headers: Record<string, string>,
+  endpoint: string,
+  tokenSource: string,
+  retryCount: number
+): Promise<any> {
+  // ✅ iOS/Android native path
+  if (Capacitor.isNativePlatform()) {
+    const method = (options.method || 'GET').toUpperCase();
+
+    let data: any = undefined;
+    if (options.body) {
+      if (typeof options.body === 'string') {
+        try {
+          data = JSON.parse(options.body);
+        } catch {
+          data = options.body;
+        }
+      } else {
+        data = options.body;
+      }
+    }
+
+    const res = await CapacitorHttp.request({
+      url,
+      method,
+      headers,
+      data,
+    });
+
+    console.log(`📥 Native response from ${endpoint}:`, {
+      status: res.status,
+      ok: res.status >= 200 && res.status < 300,
+      tokenSource,
+      retryCount,
+      dataPreview:
+        typeof res.data === 'string'
+          ? res.data.slice(0, 200)
+          : JSON.stringify(res.data ?? {}).slice(0, 200),
+    });
+
+    return { status: res.status, ok: res.status >= 200 && res.status < 300, data: res.data };
+  }
+
+  // 🌐 web path
+  const response = await fetch(url, { ...options, headers });
+  let json: any = null;
+
+  try {
+    json = await response.clone().json();
+  } catch {
+    // ignore
+  }
+
+  console.log(`📥 Web response from ${endpoint}:`, {
+    status: response.status,
+    ok: response.ok,
+    tokenSource,
+    retryCount,
+  });
+
+  return { status: response.status, ok: response.ok, data: json };
 }
 
 // Helper for API calls with automatic token refresh
 async function apiCall(endpoint: string, options: RequestInit = {}, retryCount = 0): Promise<any> {
-  // Prevent API calls if we're already redirecting to login
   if (isRedirecting) {
     console.log('⏭️ API call blocked - redirect to login in progress');
     throw new Error('Redirecting to login...');
   }
-  
+
   const url = `${API_BASE}${endpoint}`;
+
+  // Base headers
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> || {}),
+    ...(options.headers as Record<string, string> | undefined),
   };
 
-  // CRITICAL: Always include apikey header for Supabase Edge Functions
-  // Even for unauthenticated endpoints, the apikey is required
+  // CRITICAL: Supabase Edge Functions require apikey header
   headers['apikey'] = publicAnonKey;
 
-  // Get access token - check for KID mode FIRST, then fall back to Supabase
-  let accessToken: string | null = null;
-  let tokenSource: string = 'none';
-  
-  // CRITICAL: Check if this is an actual kid login (has kid token)
-  const kidToken = localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
-  
-  if (kidToken) {
-    // Actual kid login: Use kid access token from localStorage
-    accessToken = kidToken;
-    tokenSource = 'kid-session';
-    console.log('👶 Kid mode detected - using kid access token for API call:', {
-      tokenPreview: `${kidToken.substring(0, 30)}...`
-    });
-  } else {
-    // Parent mode (or parent viewing kid): Use Supabase session
-    try {
-      const { data: { session }, error } = await supabase.auth.getSession();
-      
-      if (!error && session?.access_token) {
-        accessToken = session.access_token;
-        tokenSource = 'supabase-session';
-        
-        // Validate token expiration
-        const expiresAt = session.expires_at;
-        const now = Math.floor(Date.now() / 1000);
-        const isExpired = expiresAt && expiresAt < now;
-        
-        if (isExpired) {
-          console.warn('⚠️ Token is expired, attempting refresh before request...');
-          // Try to refresh immediately
-          const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-          if (refreshError || !refreshData.session) {
-            console.error('❌ Token refresh failed:', refreshError?.message);
-            
-            // Check if user account was deleted
-            if (refreshError?.message?.includes('user_not_found') || 
-                refreshError?.message?.includes('User from sub claim in JWT does not exist')) {
-              console.error('🚨 CRITICAL: User account deleted but session still exists!');
-              console.log('🔄 Auto-clearing invalid session...');
-              
-              // Clear all session data
-              await supabase.auth.signOut();
-              localStorage.removeItem('user_role');
-              localStorage.removeItem('user_mode');
-              localStorage.removeItem('fgs_family_id');
-              localStorage.removeItem('fgs_selected_child_id');
-              localStorage.removeItem('kid_access_token');
-              localStorage.removeItem('kid_session_token');
-              
-              // Clear all Supabase session keys
-              const allKeys = Object.keys(localStorage);
-              const supabaseKeys = allKeys.filter(key => 
-                key.startsWith('sb-') || key.includes('supabase') || key.includes('auth-token')
-              );
-              supabaseKeys.forEach(key => localStorage.removeItem(key));
-              
-              console.log('✅ Invalid session cleared. Redirecting to login...');
-              redirectToLogin('User account deleted');
-              throw new Error('User account was deleted. Session cleared.');
-            }
-            
-            // Clear session and redirect to login
-            await supabase.auth.signOut();
-            redirectToLogin('Token refresh failed');
-            throw new Error('Session expired. Please log in again.');
-          }
-          
-          // Use refreshed token
-          accessToken = refreshData.session.access_token;
-          console.log('✅ Token refreshed successfully before request');
-        }
-        
-        console.log('🔍 Session check for API call:', {
-          endpoint,
-          tokenSource,
-          sessionUser: session.user?.id,
-          expiresAt: expiresAt ? new Date(expiresAt * 1000).toISOString() : 'N/A',
-          isExpired,
-          tokenPreview: `${session.access_token.substring(0, 30)}...`
-        });
-      } else if (error) {
-        console.warn('⚠️ Error getting session for API call:', error.message);
-        // Try to get a fresh session
-        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-        if (!refreshError && refreshData.session?.access_token) {
-          accessToken = refreshData.session.access_token;
-          tokenSource = 'refreshed-session';
-          console.log('✅ Session refreshed after error');
-        }
-      }
-    } catch (error) {
-      console.error('❌ Error getting session for API call:', error);
-    }
-  }
-  
-  // Fallback to temporary token cache if session not available
-  // NOTE: This should only be used immediately after login before session is persisted
-  if (!accessToken && temporaryTokenCache) {
-    console.warn('⚠️ Using temporary token cache as fallback (this should only happen immediately after login)');
-    accessToken = temporaryTokenCache;
-    tokenSource = 'temporary-cache';
-    
-    // DON'T clear the cache yet - keep it for multiple requests
-    // The AuthContext will eventually override it with a real session
-    console.log('✅ Using temporary token cache, keeping it for subsequent requests');
-  }
-  
-  // CRITICAL: Only add Authorization header if we have a valid user access token
+  // token
+  const { token: accessToken, source: tokenSource } = await getAccessTokenForRequest();
+
   if (!accessToken) {
-    console.error('❌ No access token available - cannot make authenticated API call');
-    console.error('❌ Debug info:', {
+    console.error('❌ No access token available - cannot make authenticated API call', {
       endpoint,
       retryCount,
       tokenSource,
       temporaryCacheExists: !!temporaryTokenCache,
-      localStorageKeys: Object.keys(localStorage).filter(k => k.includes('supabase') || k.includes('auth') || k.includes('sb-')).slice(0, 5)
     });
-    
-    // Redirect to login immediately
     redirectToLogin('No access token available');
-    throw new Error('Session expired. Redirecting to login...');
   }
-  
-  // Additional validation: ensure token is a proper JWT (3 parts separated by dots)
-  // SKIP this check for kid tokens (they use custom format: kid_xxxx)
-  if (tokenSource !== 'kid-session') {
-    const tokenParts = accessToken.split('.');
-    const isValidJWT = tokenParts.length === 3;
-    if (!isValidJWT) {
-      console.error('❌ Invalid JWT format - token does not have 3 parts:', {
-        parts: tokenParts.length,
-        tokenSource,
-        tokenPreview: accessToken.substring(0, 50) + '...',
-        isAnonKey: accessToken === publicAnonKey
-      });
-      
-      // Clear temporary cache if it's holding a bad token
-      if (tokenSource === 'temporary-cache') {
-        console.log('🗑️ Clearing invalid temporary token cache');
-        temporaryTokenCache = null;
-      }
-      
-      // Redirect to login immediately
-      redirectToLogin('Invalid JWT format');
-      throw new Error('Invalid authentication token. Redirecting to login...');
-    }
-  } else {
-    console.log('✅ Kid token detected - skipping JWT format validation');
-  }
-  
+
+  assertValidToken(accessToken!, tokenSource);
+
   headers['Authorization'] = `Bearer ${accessToken}`;
-  
-  // 🆕 WORKAROUND: Also send X-Supabase-Auth header
-  // Supabase Edge Functions may strip Authorization header even when "Verify JWT" is disabled
-  headers['X-Supabase-Auth'] = `Bearer ${accessToken}`;
-  
+  headers['X-Supabase-Auth'] = `Bearer ${accessToken}`; // workaround
+
   console.log('📤 API Request Headers:', {
     endpoint,
+    tokenSource,
     hasAuthorization: !!headers['Authorization'],
     hasXSupabaseAuth: !!headers['X-Supabase-Auth'],
     authPreview: headers['Authorization']?.substring(0, 30) + '...',
-    tokenSource
   });
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
+  const res = await executeRequest(url, options, headers, endpoint, tokenSource, retryCount);
 
-  console.log(`📥 Response from ${endpoint}:`, {
-    status: response.status,
-    statusText: response.statusText,
-    ok: response.ok,
-    tokenSource
-  });
-
-  // Handle 403 errors - check if user account was deleted
-  if (response.status === 403) {
-    try {
-      const errorBody = await response.clone().json();
-      const errorStr = JSON.stringify(errorBody);
-      
-      if (errorStr.includes('user_not_found') || 
-          errorStr.includes('User from sub claim in JWT does not exist') ||
-          errorStr.includes('User does not exist')) {
-        console.error('🚨 CRITICAL: User account deleted but session still exists!');
-        console.log('🔄 Auto-clearing invalid session...');
-        
-        // Clear all session data
-        await supabase.auth.signOut();
-        localStorage.removeItem('user_role');
-        localStorage.removeItem('user_mode');
-        localStorage.removeItem('fgs_family_id');
-        localStorage.removeItem('fgs_selected_child_id');
-        localStorage.removeItem('kid_access_token');
-        localStorage.removeItem('kid_session_token');
-        
-        // Clear all Supabase session keys
-        const allKeys = Object.keys(localStorage);
-        const supabaseKeys = allKeys.filter(key => 
-          key.startsWith('sb-') || key.includes('supabase') || key.includes('auth-token')
-        );
-        supabaseKeys.forEach(key => localStorage.removeItem(key));
-        
-        console.log('✅ Invalid session cleared. Redirecting to login...');
-        redirectToLogin('User account deleted');
-        throw new Error('User account was deleted. Session cleared.');
-      }
-    } catch (e) {
-      // If we can't parse the error, just continue with normal error handling
-      console.log('Could not parse 403 error body:', e);
+  // Handle 403 deleted-user detection
+  if (res.status === 403) {
+    const errorStr = JSON.stringify(res.data ?? {});
+    if (
+      errorStr.includes('user_not_found') ||
+      errorStr.includes('User from sub claim in JWT does not exist') ||
+      errorStr.includes('User does not exist')
+    ) {
+      console.error('🚨 CRITICAL: User account deleted but session still exists!');
+      await supabase.auth.signOut();
+      redirectToLogin('User account deleted');
     }
   }
 
-  // Handle 401 errors by attempting to refresh the token
-  if (response.status === 401 && retryCount === 0) {
+  // Handle 401 refresh (only once)
+  if (res.status === 401 && retryCount === 0) {
     console.log('⚠️ Received 401, attempting token refresh...');
-    
+
     const now = Date.now();
     const timeSinceLastRefresh = now - lastRefreshAttempt;
-    
-    // Prevent refresh spam - only refresh if enough time has passed
+
     if (timeSinceLastRefresh < REFRESH_COOLDOWN) {
-      console.warn(`⏳ Refresh cooldown active (${Math.ceil((REFRESH_COOLDOWN - timeSinceLastRefresh) / 1000)}s remaining). Redirecting to login.`);
-      // Instead of throwing error, redirect to login
+      console.warn('⏳ Refresh cooldown active. Redirecting to login.');
       redirectToLogin('Refresh cooldown active');
-      throw new Error('Session expired. Redirecting to login...');
     }
-    
-    // If already refreshing, wait for that refresh to complete
+
     if (isRefreshing && refreshPromise) {
       console.log('⏳ Refresh already in progress, waiting...');
-      try {
-        await refreshPromise;
-        // After refresh completes, retry the request once
-        return apiCall(endpoint, options, 1);
-      } catch (refreshError) {
-        console.error('❌ Refresh failed:', refreshError);
-        redirectToLogin('Refresh failed');
-        throw new Error('Session refresh failed. Redirecting to login...');
-      }
+      await refreshPromise;
+      return apiCall(endpoint, options, 1);
     }
-    
-    // Start new refresh
+
     isRefreshing = true;
     lastRefreshAttempt = now;
-    
+
     refreshPromise = (async () => {
       try {
-        // First check if we even have a session to refresh
         const { data: { session: currentSession } } = await supabase.auth.getSession();
-        
-        if (!currentSession) {
-          console.error('❌ No session found - cannot refresh. User needs to log in again.');
-          throw new Error('Session expired. Please log in again.');
-        }
-        
-        // Attempt to refresh the session using Supabase's built-in refresh
-        console.log('🔄 Attempting to refresh session...');
-        const { data: { session }, error } = await supabase.auth.refreshSession();
-        
-        if (error) {
-          console.error('❌ Token refresh error:', error.message);
-          throw new Error('Session refresh failed. Please log in again.');
-        }
+        if (!currentSession) throw new Error('No session to refresh');
 
-        if (session?.access_token) {
-          console.log('✅ Token refreshed successfully:', {
-            newTokenPreview: session.access_token.substring(0, 30) + '...',
-            expiresAt: new Date(session.expires_at! * 1000).toISOString()
-          });
-          return session;
-        } else {
-          console.error('❌ No active session found after refresh');
-          throw new Error('Session refresh failed. Please log in again.');
-        }
+        const { data: { session }, error } = await supabase.auth.refreshSession();
+        if (error || !session?.access_token) throw new Error('Refresh failed');
+        return session;
       } finally {
         isRefreshing = false;
         refreshPromise = null;
       }
     })();
-    
+
     try {
       await refreshPromise;
-      // Retry the request with the new token (only once)
       return apiCall(endpoint, options, 1);
-    } catch (refreshError) {
-      console.error('❌ Failed to refresh token:', refreshError);
-      // Clear session and redirect to login
+    } catch (e) {
+      console.error('❌ Failed to refresh token:', e);
       await supabase.auth.signOut();
       redirectToLogin('Failed to refresh token');
-      throw new Error('Session expired. Redirecting to login...');
     }
   }
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Request failed' }));
-    console.error('❌ API Error:', { endpoint, status: response.status, error });
-    throw new Error(error.error || `API error: ${response.status}`);
+  if (!res.ok) {
+    console.error('❌ API Error:', { endpoint, status: res.status, error: res.data });
+    const msg = res.data?.error || res.data?.message || `API error: ${res.status}`;
+    throw new Error(msg);
   }
 
-  return response.json();
+  return res.data;
 }
 
 // ===== FAMILIES & CHILDREN =====
@@ -572,15 +530,12 @@ export async function deleteWishlist(wishlistId: string) {
 // ===== INITIALIZATION =====
 
 export async function initializeDefaultData(familyId: string) {
-  // Check if items already exist to prevent duplicates
   const existingItems = await getTrackableItems();
-  
-  if (existingItems.length > 0) {
+  if (existingItems?.length > 0) {
     console.log('⏭️ Skipping default data initialization - items already exist');
     return;
   }
-  
-  // Create default trackable items
+
   const items = [
     { name: 'Fajr', type: 'habit', category: 'salah', points: 5, isReligious: true },
     { name: 'Dhuhr', type: 'habit', category: 'salah', points: 3, isReligious: true },
@@ -601,43 +556,30 @@ export async function initializeDefaultData(familyId: string) {
     await createTrackableItem(item);
   }
 
-  // Create default providers - check for existence first
   const existingProviders = await getProviders();
-  if (existingProviders.length === 0) {
+  if (!existingProviders || existingProviders.length === 0) {
     const providers = [
       { name: 'Quran Academy', ratePerClass: 25 },
       { name: 'Arabic Tutoring', ratePerClass: 30 },
     ];
-
-    for (const provider of providers) {
-      await createProvider(provider);
-    }
+    for (const p of providers) await createProvider(p);
     console.log('✅ Created default providers');
-  } else {
-    console.log('⏭️ Skipping default providers - already exist');
   }
 
-  // Create default milestones - check for existence first
   const existingMilestones = await getMilestones();
-  if (existingMilestones.length === 0) {
+  if (!existingMilestones || existingMilestones.length === 0) {
     const milestones = [
       { points: 100, name: 'Bronze Achiever' },
       { points: 250, name: 'Silver Star' },
       { points: 500, name: 'Gold Champion' },
       { points: 1000, name: 'Diamond Leader' },
     ];
-
-    for (const milestone of milestones) {
-      await createMilestone(milestone);
-    }
+    for (const m of milestones) await createMilestone(m);
     console.log('✅ Created default milestones');
-  } else {
-    console.log('⏭️ Skipping default milestones - already exist');
   }
 
-  // Create default rewards - check for existence first
   const existingRewards = await getRewards();
-  if (existingRewards.length === 0) {
+  if (!existingRewards || existingRewards.length === 0) {
     const rewards = [
       { name: 'Extra Screen Time (30min)', category: 'small', pointCost: 50 },
       { name: 'Ice Cream Outing', category: 'small', pointCost: 75 },
@@ -646,231 +588,53 @@ export async function initializeDefaultData(familyId: string) {
       { name: 'Theme Park Visit', category: 'large', pointCost: 500 },
       { name: 'Gaming Console', category: 'large', pointCost: 1000 },
     ];
-
-    for (const reward of rewards) {
-      await createReward(reward);
-    }
+    for (const r of rewards) await createReward(r);
     console.log('✅ Created default rewards');
-  } else {
-    console.log('⏭️ Skipping default rewards - already exist');
   }
-  
+
   console.log('✅ Default data initialization completed');
 }
 
-// Helper to get authentication headers
-async function getAuthHeaders() {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> || {}),
-  };
-
-  // CRITICAL: Always include apikey header for Supabase Edge Functions
-  // Even for unauthenticated endpoints, the apikey is required
-  headers['apikey'] = publicAnonKey;
-
-  // Get access token - check for KID mode FIRST, then fall back to Supabase
-  let accessToken: string | null = null;
-  let tokenSource: string = 'none';
-  
-  // CRITICAL: Check if this is an actual kid login (has kid token)
-  const kidToken = localStorage.getItem('kid_access_token') || localStorage.getItem('kid_session_token');
-  
-  if (kidToken) {
-    // Actual kid login: Use kid access token from localStorage
-    accessToken = kidToken;
-    tokenSource = 'kid-session';
-    console.log('👶 Kid mode detected - using kid access token for API call:', {
-      tokenPreview: `${kidToken.substring(0, 30)}...`
-    });
-  } else {
-    // Parent mode (or parent viewing kid): Use Supabase session
-    try {
-      const { data: { session }, error } = await supabase.auth.getSession();
-      
-      if (!error && session?.access_token) {
-        accessToken = session.access_token;
-        tokenSource = 'supabase-session';
-        
-        // Validate token expiration
-        const expiresAt = session.expires_at;
-        const now = Math.floor(Date.now() / 1000);
-        const isExpired = expiresAt && expiresAt < now;
-        
-        if (isExpired) {
-          console.warn('⚠️ Token is expired, attempting refresh before request...');
-          // Try to refresh immediately
-          const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-          if (refreshError || !refreshData.session) {
-            console.error('❌ Token refresh failed:', refreshError?.message);
-            
-            // Check if user account was deleted
-            if (refreshError?.message?.includes('user_not_found') || 
-                refreshError?.message?.includes('User from sub claim in JWT does not exist')) {
-              console.error('🚨 CRITICAL: User account deleted but session still exists!');
-              console.log('🔄 Auto-clearing invalid session...');
-              
-              // Clear all session data
-              await supabase.auth.signOut();
-              localStorage.removeItem('user_role');
-              localStorage.removeItem('user_mode');
-              localStorage.removeItem('fgs_family_id');
-              localStorage.removeItem('fgs_selected_child_id');
-              localStorage.removeItem('kid_access_token');
-              localStorage.removeItem('kid_session_token');
-              
-              // Clear all Supabase session keys
-              const allKeys = Object.keys(localStorage);
-              const supabaseKeys = allKeys.filter(key => 
-                key.startsWith('sb-') || key.includes('supabase') || key.includes('auth-token')
-              );
-              supabaseKeys.forEach(key => localStorage.removeItem(key));
-              
-              console.log('✅ Invalid session cleared. Redirecting to login...');
-              redirectToLogin('User account deleted');
-              throw new Error('User account was deleted. Session cleared.');
-            }
-            
-            // Clear session and redirect to login
-            await supabase.auth.signOut();
-            redirectToLogin('Token refresh failed');
-            throw new Error('Session expired. Please log in again.');
-          }
-          
-          // Use refreshed token
-          accessToken = refreshData.session.access_token;
-          console.log('✅ Token refreshed successfully before request');
-        }
-        
-        console.log('🔍 Session check for API call:', {
-          tokenSource,
-          sessionUser: session.user?.id,
-          expiresAt: expiresAt ? new Date(expiresAt * 1000).toISOString() : 'N/A',
-          isExpired,
-          tokenPreview: `${session.access_token.substring(0, 30)}...`
-        });
-      } else if (error) {
-        console.warn('⚠️ Error getting session for API call:', error.message);
-        // Try to get a fresh session
-        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-        if (!refreshError && refreshData.session?.access_token) {
-          accessToken = refreshData.session.access_token;
-          tokenSource = 'refreshed-session';
-          console.log('✅ Session refreshed after error');
-        }
-      }
-    } catch (error) {
-      console.error('❌ Error getting session for API call:', error);
-    }
-  }
-  
-  // Fallback to temporary token cache if session not available
-  // NOTE: This should only be used immediately after login before session is persisted
-  if (!accessToken && temporaryTokenCache) {
-    console.warn('⚠️ Using temporary token cache as fallback (this should only happen immediately after login)');
-    accessToken = temporaryTokenCache;
-    tokenSource = 'temporary-cache';
-    
-    // DON'T clear the cache yet - keep it for multiple requests
-    // The AuthContext will eventually override it with a real session
-    console.log('✅ Using temporary token cache, keeping it for subsequent requests');
-  }
-  
-  // CRITICAL: Only add Authorization header if we have a valid user access token
-  if (!accessToken) {
-    console.error('❌ No access token available - cannot make authenticated API call');
-    console.error('❌ Debug info:', {
-      retryCount,
-      tokenSource,
-      temporaryCacheExists: !!temporaryTokenCache,
-      localStorageKeys: Object.keys(localStorage).filter(k => k.includes('supabase') || k.includes('auth') || k.includes('sb-')).slice(0, 5)
-    });
-    
-    // Redirect to login immediately
-    redirectToLogin('No access token available');
-    throw new Error('Session expired. Redirecting to login...');
-  }
-  
-  // Additional validation: ensure token is a proper JWT (3 parts separated by dots)
-  // SKIP this check for kid tokens (they use custom format: kid_xxxx)
-  if (tokenSource !== 'kid-session') {
-    const tokenParts = accessToken.split('.');
-    const isValidJWT = tokenParts.length === 3;
-    if (!isValidJWT) {
-      console.error('❌ Invalid JWT format - token does not have 3 parts:', {
-        parts: tokenParts.length,
-        tokenSource,
-        tokenPreview: accessToken.substring(0, 50) + '...',
-        isAnonKey: accessToken === publicAnonKey
-      });
-      
-      // Clear temporary cache if it's holding a bad token
-      if (tokenSource === 'temporary-cache') {
-        console.log('🗑️ Clearing invalid temporary token cache');
-        temporaryTokenCache = null;
-      }
-      
-      // Redirect to login immediately
-      redirectToLogin('Invalid JWT format');
-      throw new Error('Invalid authentication token. Redirecting to login...');
-    }
-  } else {
-    console.log('✅ Kid token detected - skipping JWT format validation');
-  }
-  
-  headers['Authorization'] = `Bearer ${accessToken}`;
-
-  return headers;
-}
-
-// Export all functions as an object for easier importing
+// Optional: convenience export
 export const api = {
-  // Families & Children
   createFamily,
+  joinFamilyByCode,
   getFamily,
+  generateInviteCode,
   createChild,
   getChildren,
   updateChild,
-  
-  // Point Events
+
   checkSingleton,
   checkDedupe,
   logPointEvent,
   getChildEvents,
-  
-  // Edit Requests
+
   createEditRequest,
   getEditRequests,
   resolveEditRequest,
-  
-  // Attendance
+
   createAttendance,
   getChildAttendance,
-  
-  // Providers
+
   createProvider,
   getProviders,
-  
-  // Trackable Items
+
   createTrackableItem,
   getTrackableItems,
   deduplicateTrackableItems,
-  
-  // Milestones
+
   createMilestone,
   getMilestones,
-  
-  // Rewards
+
   createReward,
   getRewards,
-  
-  // Wishlist
+
   createWishlistItem,
   getWishlists,
   updateWishlistStatus,
   convertWishlistToReward,
   deleteWishlist,
-  
-  // Initialization
+
   initializeDefaultData,
 };
